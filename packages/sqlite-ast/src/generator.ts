@@ -82,11 +82,11 @@ function generateSelect(stmt: SelectStatement): string {
   }
 
   if (stmt.limit) {
-    sql += " LIMIT " + generateLiteral(stmt.limit);
+    sql += " LIMIT " + generateExpression(stmt.limit);
   }
 
   if (stmt.offset) {
-    sql += " OFFSET " + generateLiteral(stmt.offset);
+    sql += " OFFSET " + generateExpression(stmt.offset);
   }
 
   return sql;

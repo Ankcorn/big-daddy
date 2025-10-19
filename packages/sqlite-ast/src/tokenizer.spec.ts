@@ -585,4 +585,42 @@ WHERE email = 'unclosed string
       });
     });
   });
+
+  describe("Placeholders", () => {
+    it("should tokenize query with placeholders", () => {
+      const query = "SELECT * FROM users WHERE id = ? AND name = ?";
+      const tokens = tokenize(query);
+
+      expect(tokens).toEqual([
+        { token: "SELECT", type: "keyword", start: 0, end: 6 },
+        { token: "*", type: "operator", start: 7, end: 8 },
+        { token: "FROM", type: "keyword", start: 9, end: 13 },
+        { token: "users", type: "identifier", start: 14, end: 19 },
+        { token: "WHERE", type: "keyword", start: 20, end: 25 },
+        { token: "id", type: "identifier", start: 26, end: 28 },
+        { token: "=", type: "operator", start: 29, end: 30 },
+        { token: "?", type: "placeholder", start: 31, end: 32 },
+        { token: "AND", type: "keyword", start: 33, end: 36 },
+        { token: "name", type: "identifier", start: 37, end: 41 },
+        { token: "=", type: "operator", start: 42, end: 43 },
+        { token: "?", type: "placeholder", start: 44, end: 45 },
+      ]);
+    });
+
+    it("should tokenize INSERT with placeholders", () => {
+      const query = "INSERT INTO users (name, age) VALUES (?, ?)";
+      const tokens = tokenize(query);
+
+      expect(tokens).toContainEqual({ token: "?", type: "placeholder", start: 38, end: 39 });
+      expect(tokens).toContainEqual({ token: "?", type: "placeholder", start: 41, end: 42 });
+    });
+
+    it("should tokenize UPDATE with placeholders", () => {
+      const query = "UPDATE users SET name = ?, age = ? WHERE id = ?";
+      const tokens = tokenize(query);
+
+      const placeholders = tokens.filter(t => t.type === "placeholder");
+      expect(placeholders).toHaveLength(3);
+    });
+  });
 });

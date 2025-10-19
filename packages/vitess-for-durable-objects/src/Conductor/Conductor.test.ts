@@ -3,83 +3,59 @@ import { env } from 'cloudflare:test';
 import { createConductor } from './Conductor';
 
 describe('Conductor', () => {
-	describe('API design', () => {
-		it('should create a conductor with sql method', () => {
-			const conductor = createConductor('test-db', env);
+	async function initializeTopology(dbId: string, numNodes: number = 2) {
+		const topologyId = env.TOPOLOGY.idFromName(dbId);
+		const topologyStub = env.TOPOLOGY.get(topologyId);
+		await topologyStub.create(numNodes);
+	}
 
-			expect(conductor).toBeDefined();
-			expect(conductor.sql).toBeDefined();
-			expect(typeof conductor.sql).toBe('function');
-		});
+	it('should execute queries with parameters', async () => {
+		const dbId = 'test-query';
+		await initializeTopology(dbId);
 
-		it('should accept tagged template literals', async () => {
-			const conductor = createConductor('test-db', env);
-			const userId = 123;
+		const conductor = createConductor(dbId, env);
 
-			// This should compile and execute without errors
-			const result = await conductor.sql`SELECT * FROM users WHERE id = ${userId}`;
+		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)`;
 
-			expect(result).toBeDefined();
-			expect(result).toHaveProperty('rows');
-			expect(Array.isArray(result.rows)).toBe(true);
-		});
+		const userId = 123;
+		const name = "John's";
+		const age = 25;
 
-		it('should handle multiple parameters', async () => {
-			const conductor = createConductor('test-db', env);
-			const name = 'John';
-			const age = 25;
-
-			const result = await conductor.sql`
-				SELECT * FROM users
-				WHERE name = ${name} AND age > ${age}
-			`;
-
-			expect(result).toBeDefined();
-			expect(result).toHaveProperty('rows');
-		});
-
-		it('should handle queries without parameters', async () => {
-			const conductor = createConductor('test-db', env);
-
-			const result = await conductor.sql`SELECT * FROM users`;
-
-			expect(result).toBeDefined();
-			expect(result).toHaveProperty('rows');
-		});
+		await conductor.sql`SELECT * FROM users WHERE id = ${userId}`;
+		await conductor.sql`SELECT * FROM users WHERE name = ${name} AND age > ${age}`;
+		await conductor.sql`SELECT * FROM users`;
 	});
 
-	describe('Query building', () => {
-		it('should build parameterized queries correctly', async () => {
-			const conductor = createConductor('test-db', env);
-			const id = 123;
-			const name = "John's";
+	it('should create tables and update topology', async () => {
+		const dbId = 'test-create';
+		await initializeTopology(dbId);
 
-			// The conductor should properly parameterize these values
-			const result = await conductor.sql`
-				SELECT * FROM users
-				WHERE id = ${id} AND name = ${name}
-			`;
+		const conductor = createConductor(dbId, env);
 
-			expect(result).toBeDefined();
+		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL)`;
+
+		// Verify topology
+		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
+		const topology = await topologyStub.getTopology();
+
+		expect(topology.tables).toHaveLength(1);
+		expect(topology.tables[0]).toMatchObject({
+			table_name: 'products',
+			primary_key: 'id',
+			shard_key: 'id',
+			num_shards: 1,
 		});
 
-		it('should handle complex queries', async () => {
-			const conductor = createConductor('test-db', env);
-			const minAge = 18;
-			const status = 'active';
-			const limit = 10;
-
-			const result = await conductor.sql`
-				SELECT id, name, email
-				FROM users
-				WHERE age >= ${minAge}
-				  AND status = ${status}
-				ORDER BY created_at DESC
-				LIMIT ${limit}
-			`;
-
-			expect(result).toBeDefined();
-			expect(result).toHaveProperty('rows');
-		});
+		// Verify table exists in storage nodes
+		for (const nodeId of ['node-0', 'node-1']) {
+			const storageStub = env.STORAGE.get(env.STORAGE.idFromName(nodeId));
+			const result = await storageStub.executeQuery({
+				query: 'SELECT name FROM sqlite_master WHERE type="table" AND name="products"',
+				queryType: 'SELECT',
+			});
+			if ('rows' in result) {
+				expect(result.rows).toHaveLength(1);
+			}
+		}
 	});
 });

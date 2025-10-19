@@ -704,4 +704,87 @@ describe("parser", () => {
       });
     });
   });
+
+  describe("Placeholders", () => {
+    it("should parse SELECT with placeholders", () => {
+      const sql = "SELECT * FROM users WHERE id = ? AND name = ?";
+      const ast = parse(sql);
+
+      expect(ast.type).toBe("SelectStatement");
+      const selectStmt = ast as SelectStatement;
+
+      expect(selectStmt.where).toEqual({
+        type: "BinaryExpression",
+        operator: "AND",
+        left: {
+          type: "BinaryExpression",
+          operator: "=",
+          left: { type: "Identifier", name: "id" },
+          right: { type: "Placeholder" },
+        },
+        right: {
+          type: "BinaryExpression",
+          operator: "=",
+          left: { type: "Identifier", name: "name" },
+          right: { type: "Placeholder" },
+        },
+      });
+    });
+
+    it("should parse INSERT with placeholders", () => {
+      const sql = "INSERT INTO users (name, age) VALUES (?, ?)";
+      const ast = parse(sql);
+
+      expect(ast.type).toBe("InsertStatement");
+      const insertStmt = ast as InsertStatement;
+
+      expect(insertStmt.values).toEqual([
+        [
+          { type: "Placeholder" },
+          { type: "Placeholder" },
+        ],
+      ]);
+    });
+
+    it("should parse UPDATE with placeholders", () => {
+      const sql = "UPDATE users SET name = ?, age = ? WHERE id = ?";
+      const ast = parse(sql);
+
+      expect(ast.type).toBe("UpdateStatement");
+      const updateStmt = ast as UpdateStatement;
+
+      expect(updateStmt.set).toEqual([
+        {
+          column: { type: "Identifier", name: "name" },
+          value: { type: "Placeholder" },
+        },
+        {
+          column: { type: "Identifier", name: "age" },
+          value: { type: "Placeholder" },
+        },
+      ]);
+
+      expect(updateStmt.where).toEqual({
+        type: "BinaryExpression",
+        operator: "=",
+        left: { type: "Identifier", name: "id" },
+        right: { type: "Placeholder" },
+      });
+    });
+
+    it("should parse DELETE with placeholder", () => {
+      const sql = "DELETE FROM users WHERE id = ?";
+      const ast = parse(sql);
+
+      expect(ast.type).toBe("DeleteStatement");
+      const deleteStmt = ast as DeleteStatement;
+
+      expect(deleteStmt.where).toEqual({
+        type: "BinaryExpression",
+        operator: "=",
+        left: { type: "Identifier", name: "id" },
+        right: { type: "Placeholder" },
+      });
+    });
+  });
 });

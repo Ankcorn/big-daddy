@@ -26,8 +26,6 @@ export interface TableShard {
 	table_name: string;
 	shard_id: number;
 	node_id: string;
-	range_start: number | null;
-	range_end: number | null;
 	created_at: number;
 	updated_at: number;
 }
@@ -58,10 +56,6 @@ export interface TopologyUpdates {
 		add?: Omit<TableMetadata, 'created_at' | 'updated_at'>[];
 		update?: TableMetadataUpdate[];
 		remove?: string[];
-	};
-	table_shards?: {
-		add?: Omit<TableShard, 'created_at' | 'updated_at'>[];
-		remove?: { table_name: string; shard_id: number }[];
 	};
 }
 
@@ -119,18 +113,16 @@ export class Topology extends DurableObject<Env> {
 			)
 		`);
 
-		// Table shards mapping - maps table shards to storage nodes
+		// Table shards - maps virtual shards to physical storage nodes
 		this.ctx.storage.sql.exec(`
 			CREATE TABLE IF NOT EXISTS table_shards (
 				table_name TEXT NOT NULL,
 				shard_id INTEGER NOT NULL,
 				node_id TEXT NOT NULL,
-				range_start INTEGER,
-				range_end INTEGER,
 				created_at INTEGER NOT NULL,
 				updated_at INTEGER NOT NULL,
 				PRIMARY KEY (table_name, shard_id),
-				FOREIGN KEY (table_name) REFERENCES tables(table_name),
+				FOREIGN KEY (table_name) REFERENCES tables(table_name) ON DELETE CASCADE,
 				FOREIGN KEY (node_id) REFERENCES storage_nodes(node_id)
 			)
 		`);
@@ -198,7 +190,7 @@ export class Topology extends DurableObject<Env> {
 	/**
 	 * Read all topology information in a single operation
 	 *
-	 * @returns Complete topology data including storage nodes, tables, and shards
+	 * @returns Complete topology data including storage nodes and tables
 	 */
 	async getTopology(): Promise<TopologyData> {
 		this.ensureCreated();
@@ -206,7 +198,7 @@ export class Topology extends DurableObject<Env> {
 
 		const tables = this.ctx.storage.sql.exec(`SELECT * FROM tables`).toArray() as unknown as TableMetadata[];
 
-		const table_shards = this.ctx.storage.sql.exec(`SELECT * FROM table_shards`).toArray() as unknown as TableShard[];
+		const table_shards = this.ctx.storage.sql.exec(`SELECT * FROM table_shards ORDER BY table_name, shard_id`).toArray() as unknown as TableShard[];
 
 		return {
 			storage_nodes,
@@ -229,7 +221,17 @@ export class Topology extends DurableObject<Env> {
 
 		// Add new tables
 		if (updates.tables?.add) {
+			// Get storage nodes for shard distribution
+			const nodes = this.ctx.storage.sql.exec(`SELECT node_id FROM storage_nodes WHERE status = 'active'`).toArray() as unknown as {
+				node_id: string;
+			}[];
+
+			if (nodes.length === 0) {
+				throw new Error('No active storage nodes available');
+			}
+
 			for (const table of updates.tables.add) {
+				// Insert table metadata
 				this.ctx.storage.sql.exec(
 					`INSERT INTO tables (table_name, primary_key, primary_key_type, shard_strategy, shard_key, num_shards, block_size, created_at, updated_at)
 					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -243,6 +245,23 @@ export class Topology extends DurableObject<Env> {
 					now,
 					now,
 				);
+
+				// Create table_shards mappings - distribute shards across storage nodes
+				for (let shardId = 0; shardId < table.num_shards; shardId++) {
+					// Simple modulo distribution across available nodes
+					const nodeIndex = shardId % nodes.length;
+					const nodeId = nodes[nodeIndex].node_id;
+
+					this.ctx.storage.sql.exec(
+						`INSERT INTO table_shards (table_name, shard_id, node_id, created_at, updated_at)
+						 VALUES (?, ?, ?, ?, ?)`,
+						table.table_name,
+						shardId,
+						nodeId,
+						now,
+						now,
+					);
+				}
 			}
 		}
 
@@ -275,30 +294,6 @@ export class Topology extends DurableObject<Env> {
 		if (updates.tables?.remove) {
 			for (const table_name of updates.tables.remove) {
 				this.ctx.storage.sql.exec(`DELETE FROM tables WHERE table_name = ?`, table_name);
-			}
-		}
-
-		// Add table shards
-		if (updates.table_shards?.add) {
-			for (const shard of updates.table_shards.add) {
-				this.ctx.storage.sql.exec(
-					`INSERT INTO table_shards (table_name, shard_id, node_id, range_start, range_end, created_at, updated_at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-					shard.table_name,
-					shard.shard_id,
-					shard.node_id,
-					shard.range_start,
-					shard.range_end,
-					now,
-					now,
-				);
-			}
-		}
-
-		// Remove table shards
-		if (updates.table_shards?.remove) {
-			for (const shard of updates.table_shards.remove) {
-				this.ctx.storage.sql.exec(`DELETE FROM table_shards WHERE table_name = ? AND shard_id = ?`, shard.table_name, shard.shard_id);
 			}
 		}
 

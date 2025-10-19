@@ -165,24 +165,16 @@ class Parser {
       orderBy = this.parseOrderBy();
     }
 
-    let limit: Literal | undefined;
+    let limit: Expression | undefined;
     if (this.match("LIMIT")) {
       this.advance();
-      const token = this.current();
-      if (token?.type === "number") {
-        const raw = this.advance()!.token;
-        limit = { type: "Literal", value: parseFloat(raw), raw };
-      }
+      limit = this.parsePrimary();
     }
 
-    let offset: Literal | undefined;
+    let offset: Expression | undefined;
     if (this.match("OFFSET")) {
       this.advance();
-      const token = this.current();
-      if (token?.type === "number") {
-        const raw = this.advance()!.token;
-        offset = { type: "Literal", value: parseFloat(raw), raw };
-      }
+      offset = this.parsePrimary();
     }
 
     // Skip trailing semicolon if present

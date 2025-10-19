@@ -98,8 +98,8 @@ export interface SelectStatement extends BaseNode {
   groupBy?: Expression[]
   having?: Expression
   orderBy?: OrderByClause[]
-  limit?: Literal
-  offset?: Literal
+  limit?: Expression
+  offset?: Expression
 }
 
 export interface SelectClause extends BaseNode {

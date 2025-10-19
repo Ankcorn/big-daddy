@@ -66,10 +66,8 @@ describe('Topology Durable Object', () => {
 			const topology = await stub.getTopology();
 			expect(topology).toHaveProperty('storage_nodes');
 			expect(topology).toHaveProperty('tables');
-			expect(topology).toHaveProperty('table_shards');
 			expect(topology.storage_nodes).toHaveLength(2);
 			expect(topology.tables).toEqual([]);
-			expect(topology.table_shards).toEqual([]);
 		});
 	});
 
@@ -98,7 +96,7 @@ describe('Topology Durable Object', () => {
 			).rejects.toThrow('Topology not created');
 		});
 
-		it('should add tables', async () => {
+		it('should add tables and create table_shards', async () => {
 			const id = env.TOPOLOGY.idFromName('test-topology-update-2');
 			const stub = env.TOPOLOGY.get(id);
 
@@ -113,7 +111,7 @@ describe('Topology Durable Object', () => {
 							primary_key_type: 'INTEGER',
 							shard_strategy: 'hash',
 							shard_key: 'id',
-							num_shards: 2,
+							num_shards: 4,
 							block_size: 500,
 						},
 					],
@@ -123,55 +121,20 @@ describe('Topology Durable Object', () => {
 			const topology = await stub.getTopology();
 			expect(topology.tables).toHaveLength(1);
 			expect(topology.tables[0].table_name).toBe('users');
-		});
 
-		it('should add table shards', async () => {
-			const id = env.TOPOLOGY.idFromName('test-topology-update-3');
-			const stub = env.TOPOLOGY.get(id);
+			// Verify table_shards were created
+			const userShards = topology.table_shards.filter((s) => s.table_name === 'users');
+			expect(userShards).toHaveLength(4);
 
-			await stub.create(2);
-
-			// Add table first
-			await stub.updateTopology({
-				tables: {
-					add: [
-						{
-							table_name: 'products',
-							primary_key: 'id',
-							primary_key_type: 'INTEGER',
-							shard_strategy: 'hash',
-							shard_key: 'id',
-							num_shards: 2,
-							block_size: 500,
-						},
-					],
-				},
-			});
-
-			// Add shards
-			await stub.updateTopology({
-				table_shards: {
-					add: [
-						{
-							table_name: 'products',
-							shard_id: 0,
-							node_id: 'node-0',
-							range_start: null,
-							range_end: null,
-						},
-						{
-							table_name: 'products',
-							shard_id: 1,
-							node_id: 'node-1',
-							range_start: null,
-							range_end: null,
-						},
-					],
-				},
-			});
-
-			const topology = await stub.getTopology();
-			expect(topology.table_shards).toHaveLength(2);
+			// Verify shards are distributed across nodes using modulo
+			expect(userShards[0].shard_id).toBe(0);
+			expect(userShards[0].node_id).toBe('node-0'); // 0 % 2 = 0
+			expect(userShards[1].shard_id).toBe(1);
+			expect(userShards[1].node_id).toBe('node-1'); // 1 % 2 = 1
+			expect(userShards[2].shard_id).toBe(2);
+			expect(userShards[2].node_id).toBe('node-0'); // 2 % 2 = 0
+			expect(userShards[3].shard_id).toBe(3);
+			expect(userShards[3].node_id).toBe('node-1'); // 3 % 2 = 1
 		});
 
 		it('should update table configuration', async () => {

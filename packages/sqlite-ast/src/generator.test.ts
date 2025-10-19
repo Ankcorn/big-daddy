@@ -82,4 +82,41 @@ describe("generator", () => {
       expect(generated).toBe(sql);
     });
   });
+
+  describe("Placeholders", () => {
+    it("should generate SELECT with placeholders", () => {
+      const sql = "SELECT * FROM users WHERE id = ? AND name = ?";
+      const ast = parse(sql);
+      const generated = generate(ast);
+      expect(generated).toBe(sql);
+    });
+
+    it("should generate INSERT with placeholders", () => {
+      const sql = "INSERT INTO users (name, age) VALUES (?, ?)";
+      const ast = parse(sql);
+      const generated = generate(ast);
+      expect(generated).toBe(sql);
+    });
+
+    it("should generate UPDATE with placeholders", () => {
+      const sql = "UPDATE users SET name = ?, age = ? WHERE id = ?";
+      const ast = parse(sql);
+      const generated = generate(ast);
+      expect(generated).toBe(sql);
+    });
+
+    it("should generate DELETE with placeholder", () => {
+      const sql = "DELETE FROM users WHERE id = ?";
+      const ast = parse(sql);
+      const generated = generate(ast);
+      expect(generated).toBe(sql);
+    });
+
+    it("should generate complex query with multiple placeholders", () => {
+      const sql = "SELECT name, email FROM users WHERE age > ? AND status = ? ORDER BY name ASC LIMIT ?";
+      const ast = parse(sql);
+      const generated = generate(ast);
+      expect(generated).toBe(sql);
+    });
+  });
 });
