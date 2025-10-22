@@ -15,6 +15,7 @@ export interface Literal extends BaseNode {
 
 export interface Placeholder extends BaseNode {
   type: 'Placeholder'
+  parameterIndex: number // Zero-based index of this placeholder in the query
 }
 
 export interface BinaryExpression extends BaseNode {

@@ -720,13 +720,13 @@ describe("parser", () => {
           type: "BinaryExpression",
           operator: "=",
           left: { type: "Identifier", name: "id" },
-          right: { type: "Placeholder" },
+          right: { type: "Placeholder", parameterIndex: 0 },
         },
         right: {
           type: "BinaryExpression",
           operator: "=",
           left: { type: "Identifier", name: "name" },
-          right: { type: "Placeholder" },
+          right: { type: "Placeholder", parameterIndex: 1 },
         },
       });
     });
@@ -740,8 +740,8 @@ describe("parser", () => {
 
       expect(insertStmt.values).toEqual([
         [
-          { type: "Placeholder" },
-          { type: "Placeholder" },
+          { type: "Placeholder", parameterIndex: 0 },
+          { type: "Placeholder", parameterIndex: 1 },
         ],
       ]);
     });
@@ -756,11 +756,11 @@ describe("parser", () => {
       expect(updateStmt.set).toEqual([
         {
           column: { type: "Identifier", name: "name" },
-          value: { type: "Placeholder" },
+          value: { type: "Placeholder", parameterIndex: 0 },
         },
         {
           column: { type: "Identifier", name: "age" },
-          value: { type: "Placeholder" },
+          value: { type: "Placeholder", parameterIndex: 1 },
         },
       ]);
 
@@ -768,7 +768,7 @@ describe("parser", () => {
         type: "BinaryExpression",
         operator: "=",
         left: { type: "Identifier", name: "id" },
-        right: { type: "Placeholder" },
+        right: { type: "Placeholder", parameterIndex: 2 },
       });
     });
 
@@ -783,7 +783,7 @@ describe("parser", () => {
         type: "BinaryExpression",
         operator: "=",
         left: { type: "Identifier", name: "id" },
-        right: { type: "Placeholder" },
+        right: { type: "Placeholder", parameterIndex: 0 },
       });
     });
   });

@@ -30,10 +30,32 @@ export interface TableShard {
 	updated_at: number;
 }
 
+export type IndexStatus = 'building' | 'ready' | 'failed' | 'rebuilding';
+
+export interface VirtualIndex {
+	index_name: string;
+	table_name: string;
+	column_name: string;
+	index_type: 'hash' | 'unique';
+	status: IndexStatus;
+	error_message: string | null;
+	created_at: number;
+	updated_at: number;
+}
+
+export interface VirtualIndexEntry {
+	index_name: string;
+	key_value: string;
+	shard_ids: string; // Stored as JSON array string
+	updated_at: number;
+}
+
 export interface TopologyData {
 	storage_nodes: StorageNode[];
 	tables: TableMetadata[];
 	table_shards: TableShard[];
+	virtual_indexes: VirtualIndex[];
+	virtual_index_entries: VirtualIndexEntry[];
 }
 
 export interface StorageNodeUpdate {
@@ -126,6 +148,33 @@ export class Topology extends DurableObject<Env> {
 				FOREIGN KEY (node_id) REFERENCES storage_nodes(node_id)
 			)
 		`);
+
+		// Virtual indexes - metadata for indexes that enable query optimization
+		this.ctx.storage.sql.exec(`
+			CREATE TABLE IF NOT EXISTS virtual_indexes (
+				index_name TEXT PRIMARY KEY,
+				table_name TEXT NOT NULL,
+				column_name TEXT NOT NULL,
+				index_type TEXT NOT NULL CHECK(index_type IN ('hash', 'unique')),
+				status TEXT NOT NULL DEFAULT 'building' CHECK(status IN ('building', 'ready', 'failed', 'rebuilding')),
+				error_message TEXT,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL,
+				FOREIGN KEY (table_name) REFERENCES tables(table_name) ON DELETE CASCADE
+			)
+		`);
+
+		// Virtual index entries - maps indexed values to shard IDs
+		this.ctx.storage.sql.exec(`
+			CREATE TABLE IF NOT EXISTS virtual_index_entries (
+				index_name TEXT NOT NULL,
+				key_value TEXT NOT NULL,
+				shard_ids TEXT NOT NULL,
+				updated_at INTEGER NOT NULL,
+				PRIMARY KEY (index_name, key_value),
+				FOREIGN KEY (index_name) REFERENCES virtual_indexes(index_name) ON DELETE CASCADE
+			)
+		`);
 	}
 
 	/**
@@ -172,9 +221,10 @@ export class Topology extends DurableObject<Env> {
 		// Store number of nodes
 		this.ctx.storage.sql.exec(`INSERT INTO cluster_metadata (key, value) VALUES ('num_nodes', ?)`, String(numNodes));
 
-		// Create storage nodes
+		// Create storage nodes with unique, unguessable IDs
 		for (let i = 0; i < numNodes; i++) {
-			const nodeId = `node-${i}`;
+			// Generate a unique ID using crypto.randomUUID()
+			const nodeId = crypto.randomUUID();
 			this.ctx.storage.sql.exec(
 				`INSERT INTO storage_nodes (node_id, created_at, updated_at, status, capacity_used, error)
 				 VALUES (?, ?, ?, 'active', 0, NULL)`,
@@ -190,7 +240,7 @@ export class Topology extends DurableObject<Env> {
 	/**
 	 * Read all topology information in a single operation
 	 *
-	 * @returns Complete topology data including storage nodes and tables
+	 * @returns Complete topology data including storage nodes, tables, and virtual indexes
 	 */
 	async getTopology(): Promise<TopologyData> {
 		this.ensureCreated();
@@ -200,10 +250,16 @@ export class Topology extends DurableObject<Env> {
 
 		const table_shards = this.ctx.storage.sql.exec(`SELECT * FROM table_shards ORDER BY table_name, shard_id`).toArray() as unknown as TableShard[];
 
+		const virtual_indexes = this.ctx.storage.sql.exec(`SELECT * FROM virtual_indexes`).toArray() as unknown as VirtualIndex[];
+
+		const virtual_index_entries = this.ctx.storage.sql.exec(`SELECT * FROM virtual_index_entries`).toArray() as unknown as VirtualIndexEntry[];
+
 		return {
 			storage_nodes,
 			tables,
 			table_shards,
+			virtual_indexes,
+			virtual_index_entries,
 		};
 	}
 
@@ -296,6 +352,151 @@ export class Topology extends DurableObject<Env> {
 				this.ctx.storage.sql.exec(`DELETE FROM tables WHERE table_name = ?`, table_name);
 			}
 		}
+
+		return { success: true };
+	}
+
+	/**
+	 * Create a virtual index
+	 *
+	 * @param indexName - Unique name for the index
+	 * @param tableName - Table to index
+	 * @param columnName - Column to index
+	 * @param indexType - Type of index ('hash' or 'unique')
+	 * @returns Success status or error
+	 */
+	async createVirtualIndex(
+		indexName: string,
+		tableName: string,
+		columnName: string,
+		indexType: 'hash' | 'unique',
+	): Promise<{ success: boolean; error?: string }> {
+		this.ensureCreated();
+
+		// Check if index already exists
+		const existing = this.ctx.storage.sql
+			.exec(`SELECT index_name FROM virtual_indexes WHERE index_name = ?`, indexName)
+			.toArray() as unknown as { index_name: string }[];
+
+		if (existing.length > 0) {
+			return { success: false, error: `Index '${indexName}' already exists` };
+		}
+
+		// Check if table exists
+		const tableExists = this.ctx.storage.sql
+			.exec(`SELECT table_name FROM tables WHERE table_name = ?`, tableName)
+			.toArray() as unknown as { table_name: string }[];
+
+		if (tableExists.length === 0) {
+			return { success: false, error: `Table '${tableName}' does not exist` };
+		}
+
+		const now = Date.now();
+
+		// Create index with 'building' status
+		this.ctx.storage.sql.exec(
+			`INSERT INTO virtual_indexes (index_name, table_name, column_name, index_type, status, error_message, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, 'building', NULL, ?, ?)`,
+			indexName,
+			tableName,
+			columnName,
+			indexType,
+			now,
+			now,
+		);
+
+		return { success: true };
+	}
+
+	/**
+	 * Update virtual index status
+	 *
+	 * @param indexName - Index to update
+	 * @param status - New status
+	 * @param errorMessage - Optional error message for failed status
+	 */
+	async updateIndexStatus(indexName: string, status: IndexStatus, errorMessage?: string): Promise<void> {
+		this.ensureCreated();
+
+		const now = Date.now();
+
+		this.ctx.storage.sql.exec(
+			`UPDATE virtual_indexes SET status = ?, error_message = ?, updated_at = ? WHERE index_name = ?`,
+			status,
+			errorMessage ?? null,
+			now,
+			indexName,
+		);
+	}
+
+	/**
+	 * Batch upsert multiple virtual index entries
+	 *
+	 * Writes entries one at a time to avoid SQLite variable limits and handle variable-length values.
+	 * This is safe and efficient because Durable Object writes are extremely fast (single-digit ms).
+	 *
+	 * @param indexName - Index name
+	 * @param entries - Array of entries to upsert, each with keyValue and shardIds
+	 * @returns Number of entries upserted
+	 */
+	async batchUpsertIndexEntries(
+		indexName: string,
+		entries: Array<{ keyValue: string; shardIds: number[] }>,
+	): Promise<{ count: number }> {
+		this.ensureCreated();
+
+		if (entries.length === 0) {
+			return { count: 0 };
+		}
+
+		const now = Date.now();
+
+		// Write entries one at a time - DO writes are fast enough that this is not a bottleneck
+		for (const entry of entries) {
+			this.ctx.storage.sql.exec(
+				`INSERT OR REPLACE INTO virtual_index_entries (index_name, key_value, shard_ids, updated_at)
+				 VALUES (?, ?, ?, ?)`,
+				indexName,
+				entry.keyValue,
+				JSON.stringify(entry.shardIds),
+				now,
+			);
+		}
+
+		return { count: entries.length };
+	}
+
+	/**
+	 * Get shard IDs for a specific indexed value
+	 *
+	 * @param indexName - Index name
+	 * @param keyValue - The indexed value
+	 * @returns Array of shard IDs, or null if not found
+	 */
+	async getIndexedShards(indexName: string, keyValue: string): Promise<number[] | null> {
+		this.ensureCreated();
+
+		const result = this.ctx.storage.sql
+			.exec(`SELECT shard_ids FROM virtual_index_entries WHERE index_name = ? AND key_value = ?`, indexName, keyValue)
+			.toArray() as unknown as { shard_ids: string }[];
+
+		if (result.length === 0) {
+			return null;
+		}
+
+		return JSON.parse(result[0].shard_ids) as number[];
+	}
+
+	/**
+	 * Delete a virtual index and all its entries
+	 *
+	 * @param indexName - Index to delete
+	 */
+	async dropVirtualIndex(indexName: string): Promise<{ success: boolean }> {
+		this.ensureCreated();
+
+		// CASCADE will automatically delete index entries
+		this.ctx.storage.sql.exec(`DELETE FROM virtual_indexes WHERE index_name = ?`, indexName);
 
 		return { success: true };
 	}

@@ -19,6 +19,9 @@ export { Topology } from "./Topology/Topology";
 export { createConductor, ConductorClient } from "./Conductor/Conductor";
 export type { QueryResult } from "./Conductor/Conductor";
 
+// Import queue consumer
+import { queueHandler } from "./queue-consumer";
+
 export default {
 	/**
 	 * This is the standard fetch handler for a Cloudflare Worker
@@ -44,4 +47,9 @@ export default {
 			headers: { "Content-Type": "application/json" },
 		});
 	},
+
+	/**
+	 * Queue handler for processing virtual index jobs
+	 */
+	queue: queueHandler,
 } satisfies ExportedHandler<Env>;

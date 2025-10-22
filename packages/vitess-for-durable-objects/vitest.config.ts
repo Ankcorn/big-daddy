@@ -8,6 +8,7 @@ export default defineWorkersConfig({
 					configPath: './wrangler.jsonc',
 				},
 				isolatedStorage: false,
+				singleWorker: true, // Required for queue consumer testing - prevents ERR_MULTIPLE_CONSUMERS
 			},
 		},
 	},

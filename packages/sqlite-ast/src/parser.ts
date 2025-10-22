@@ -39,6 +39,7 @@ export class ParserError extends Error {
 class Parser {
   private tokens: Token[];
   private position: number = 0;
+  private placeholderCount: number = 0;
 
   constructor(tokens: Token[]) {
     this.tokens = tokens;
@@ -860,7 +861,7 @@ class Parser {
 
     if (token.type === "placeholder") {
       this.advance(); // consume ?
-      return { type: "Placeholder" };
+      return { type: "Placeholder", parameterIndex: this.placeholderCount++ };
     }
 
     throw new ParserError(`Unexpected token '${token.token}'`, token);

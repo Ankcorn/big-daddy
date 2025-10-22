@@ -9,7 +9,7 @@ A distributed database system built on Cloudflare Durable Objects, inspired by V
 1. **Storage Nodes** - Physical data storage
    - Each node is a Durable Object with its own SQLite database
    - Immutable once created - the number of nodes is fixed at cluster creation
-   - Named `node-0`, `node-1`, `node-2`, etc.
+   - Identified by unique, unguessable UUIDs (only accessible via Topology)
 
 2. **Topology** - Cluster metadata
    - Tracks storage nodes and their health
@@ -44,8 +44,15 @@ With virtual sharding:
 - The hash function `hash(key) % 1000` stays the same, only the node assignment changes
 
 #### Query routing:
-- For SELECT queries: queries all shards and merges results
-- For INSERT/UPDATE/DELETE: currently uses first shard only (to be improved with WHERE clause parsing)
+- **INSERT queries**: Routes to specific shard based on hash of shard key value
+- **SELECT queries**:
+  - If WHERE clause filters on shard key with equality (e.g., `WHERE id = 123`), routes to specific shard
+  - If WHERE clause filters on other columns or uses complex conditions, queries all shards and merges results
+  - If no WHERE clause, queries all shards and merges results
+- **UPDATE/DELETE queries**:
+  - If WHERE clause filters on shard key with equality (e.g., `WHERE id = 123`), routes to specific shard
+  - If WHERE clause filters on other columns or uses complex conditions, queries all shards
+  - If no WHERE clause, queries all shards
 
 ## Usage
 
@@ -84,13 +91,30 @@ await conductor.sql`
 
 ## Features
 
+### Core Database Features
 - ✅ **DDL Support** - CREATE TABLE via Conductor with automatic topology updates
 - ✅ **SQL parsing** - Full support for `?` placeholders with tagged template literals
 - ✅ **Virtual sharding** - Logical shards with explicit table_shards mapping layer for flexible node distribution
-- ✅ **Automatic query routing** - Routes queries to appropriate shards based on table_shards mapping
-- ✅ **Multi-shard execution** - Executes queries across shards and merges results
-- ✅ **Immutable storage nodes** - Node count is fixed at cluster creation for stability
+- ✅ **Smart INSERT routing** - Hashes shard key values to route INSERTs to correct shard
+- ✅ **Smart SELECT routing** - Analyzes WHERE clauses to route to specific shards when filtering on shard key
+- ✅ **Smart UPDATE/DELETE routing** - Parses WHERE clauses to route to specific shards when possible
+- ✅ **Centralized routing logic** - Single `determineShardTargets()` method handles all query types
+- ✅ **Correct placeholder tracking** - `sqlite-ast` tracks parameter positions for complex WHERE clauses
+- ✅ **Clean query pipeline** - Four-step architecture: Parse → Route → Execute → Merge
+- ✅ **Modular utilities** - Separated concerns: sharding, AST parsing, and schema extraction
+- ✅ **Batched parallel execution** - Queries execute in batches of 7 shards to respect Cloudflare limits
+- ✅ **Multi-shard result merging** - Combines results from multiple shards
+- ✅ **Immutable storage nodes** - Node count is fixed at cluster creation with unguessable UUIDs
 - ✅ **Health monitoring** - Periodic alarms check storage node capacity and status
+
+### Virtual Indexes (In Progress - Phase 2)
+- ✅ **Queue infrastructure** - Cloudflare Queue configured for async index operations
+- ✅ **Index schema** - virtual_indexes and virtual_index_entries tables in Topology
+- ✅ **CREATE INDEX parsing** - Handles CREATE INDEX statements with IF NOT EXISTS
+- ✅ **Non-blocking index creation** - Returns immediately, builds index in background
+- ⏳ **Index building** - Queue consumer processes IndexBuildJob (implementation pending)
+- ⏳ **Index-based routing** - Use indexes to optimize query routing (Phase 3)
+- ⏳ **Index maintenance** - Update indexes on INSERT/UPDATE/DELETE (Phase 4)
 
 ## Roadmap / TODO
 
@@ -102,20 +126,23 @@ The table_shards mapping layer is now in place, enabling future enhancements:
 - **Data migration** - Move actual data when reassigning shards to new nodes
 
 ### Smart Query Routing
-- Parse WHERE clauses to determine which shards contain relevant data
-- Extract shard key values from INSERT/UPDATE/DELETE queries
-- Route writes to the correct shard based on the shard key
-- Support hash-based and range-based shard key distribution
+- ✅ Parse WHERE clauses to determine which shards contain relevant data (basic equality support)
+- ✅ Route SELECT/UPDATE/DELETE to specific shards based on WHERE clause shard key
+- ✅ Centralized shard selection logic (refactored into `determineShardTargets()`)
+- Support range-based shard key distribution (in addition to hash-based)
+- Support complex WHERE clause patterns (AND/OR, range queries, IN clauses)
 
 ### Query Optimization
+- ✅ Parallel query execution across shards
 - Push down WHERE clauses to storage nodes
-- Parallel query execution across shards
 - Query result streaming for large result sets
+- Topology caching (currently fetched on every query)
 
 ### DDL Enhancements
 - ALTER TABLE propagation across shards
 - DROP TABLE cleanup and topology updates
-- CREATE INDEX support with automatic distribution
+- ✅ CREATE INDEX support - Phase 1-2 complete, background building in progress
+- DROP INDEX support
 
 ### Advanced Features
 - Transactions across multiple shards

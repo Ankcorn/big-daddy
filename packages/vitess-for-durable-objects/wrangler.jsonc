@@ -30,6 +30,27 @@
 	},
 	"observability": {
 		"enabled": true
+	},
+	/**
+	 * Queues
+	 * https://developers.cloudflare.com/queues/
+	 */
+	"queues": {
+		"producers": [
+			{
+				"queue": "vitess-index-jobs",
+				"binding": "INDEX_QUEUE"
+			}
+		],
+		"consumers": [
+			{
+				"queue": "vitess-index-jobs",
+				"max_batch_size": 10,
+				"max_batch_timeout": 5,
+				"max_retries": 3,
+				"dead_letter_queue": "vitess-index-dlq"
+			}
+		]
 	}
 	/**
 	 * Smart Placement
