@@ -9,10 +9,21 @@ import type {
 	CreateIndexStatement,
 } from '@databases/sqlite-ast';
 import type { Storage, QueryResult as StorageQueryResult, QueryType } from './storage';
-import type { Topology, TableMetadata } from './topology';
+import type { Topology, TableMetadata, QueryPlanData } from './topology';
 import { extractTableName, getQueryType, buildQuery } from './utils/ast-utils';
 import { extractTableMetadata } from './utils/schema-utils';
 import type { IndexJob, IndexMaintenanceJob } from './queue/types';
+import { TopologyCache } from './utils/topology-cache';
+
+/**
+ * Cache statistics for a query
+ */
+export interface QueryCacheStats {
+	cacheHit: boolean; // Whether this specific query was a cache hit
+	totalHits: number; // Total cache hits for this conductor instance
+	totalMisses: number; // Total cache misses for this conductor instance
+	cacheSize: number; // Number of entries currently in cache
+}
 
 /**
  * Result from a SQL query execution
@@ -20,6 +31,7 @@ import type { IndexJob, IndexMaintenanceJob } from './queue/types';
 export interface QueryResult {
 	rows: Record<string, any>[];
 	rowsAffected?: number;
+	cacheStats?: QueryCacheStats; // Cache statistics (only for SELECT queries)
 }
 
 /**
@@ -30,13 +42,31 @@ export interface QueryResult {
  * execution across multiple storage nodes.
  */
 export class ConductorClient {
+	private cache: TopologyCache;
+
 	constructor(
 		private databaseId: string,
 		private storage: DurableObjectNamespace<Storage>,
 		private topology: DurableObjectNamespace<Topology>,
 		private indexQueue?: Queue,
 		private env?: Env, // For test environment queue processing
-	) {}
+	) {
+		this.cache = new TopologyCache();
+	}
+
+	/**
+	 * Get cache statistics (for testing and monitoring)
+	 */
+	getCacheStats() {
+		return this.cache.getStats();
+	}
+
+	/**
+	 * Clear the topology cache (for testing)
+	 */
+	clearCache() {
+		this.cache.clear();
+	}
 
 	/**
 	 * Execute a SQL query using tagged template literals
@@ -60,17 +90,16 @@ export class ConductorClient {
 			return await this.handleCreateIndex(statement as CreateIndexStatement);
 		}
 
-		// STEP 2: Route - Get ALL topology data in a single call
+		// STEP 2: Route - Get ALL topology data (with caching)
 		const tableName = extractTableName(statement);
 		if (!tableName) {
 			throw new Error('Could not determine table name from query');
 		}
 
-		// **SINGLE TOPOLOGY CALL** - Get all topology data AND determine shard targets
+		// **CACHED TOPOLOGY CALL** - Get all topology data AND determine shard targets
 		// All planning logic (including index usage) happens inside the Topology DO
-		const topologyId = this.topology.idFromName(this.databaseId);
-		const topologyStub = this.topology.get(topologyId);
-		const planData = await topologyStub.getQueryPlanData(tableName, statement, params);
+		// Cache eliminates this call for repeated queries with same predicates
+		const { planData, cacheHit } = await this.getCachedQueryPlanData(tableName, statement, params);
 
 		// Shard targets are already determined by Topology!
 		const shardsToQuery = planData.shardsToQuery;
@@ -91,8 +120,27 @@ export class ConductorClient {
 			);
 		}
 
+		// STEP 3.6: Cache Invalidation - Invalidate cache for write operations
+		// This ensures the cache stays fresh after data modifications
+		if (statement.type === 'InsertStatement' || statement.type === 'UpdateStatement' || statement.type === 'DeleteStatement') {
+			this.invalidateCacheForWrite(tableName, statement, planData.virtualIndexes, params);
+		}
+
 		// STEP 4: Merge - Combine results from all shards
-		return this.mergeResults(results, statement);
+		const result = this.mergeResults(results, statement);
+
+		// STEP 5: Add cache statistics to result (for SELECT queries)
+		if (statement.type === 'SelectStatement') {
+			const stats = this.cache.getStats();
+			result.cacheStats = {
+				cacheHit,
+				totalHits: stats.hits,
+				totalMisses: stats.misses,
+				cacheSize: stats.size,
+			};
+		}
+
+		return result;
 	};
 
 	/**
@@ -265,6 +313,185 @@ export class ConductorClient {
 		}
 
 		return { tableMetadata, tableShards };
+	}
+
+	/**
+	 * Get query plan data with caching
+	 *
+	 * This method checks the cache first before calling the Topology DO.
+	 * For cacheable queries (SELECT with WHERE clause), this can eliminate
+	 * the Topology DO call entirely.
+	 *
+	 * @returns Query plan data and whether it was a cache hit
+	 */
+	private async getCachedQueryPlanData(tableName: string, statement: Statement, params: any[]): Promise<{ planData: QueryPlanData; cacheHit: boolean }> {
+		// Try to build a cache key for this query
+		const cacheKey = this.cache.buildQueryPlanCacheKey(tableName, statement, params);
+
+		// Check cache if we have a valid cache key
+		if (cacheKey) {
+			const cached = this.cache.getQueryPlanData(cacheKey);
+			if (cached) {
+				return { planData: cached, cacheHit: true };
+			}
+		}
+
+		// Cache miss - fetch from Topology DO
+		const topologyId = this.topology.idFromName(this.databaseId);
+		const topologyStub = this.topology.get(topologyId);
+		const planData = await topologyStub.getQueryPlanData(tableName, statement, params);
+
+		// Store in cache if cacheable
+		if (cacheKey) {
+			const ttl = this.cache.getTTLForQuery(statement);
+			this.cache.setQueryPlanData(cacheKey, planData, ttl);
+		}
+
+		return { planData, cacheHit: false };
+	}
+
+	/**
+	 * Invalidate cache entries for write operations
+	 *
+	 * This method invalidates the appropriate cache entries based on the write operation:
+	 * - INSERT: Invalidate query plan cache + index caches for inserted values
+	 * - UPDATE: Invalidate query plan cache + index caches for updated values
+	 * - DELETE: Invalidate query plan cache + index caches for deleted values
+	 */
+	private invalidateCacheForWrite(
+		tableName: string,
+		statement: InsertStatement | UpdateStatement | DeleteStatement,
+		virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
+		params: any[],
+	): void {
+		// Always invalidate the query plan cache for this table
+		// This ensures queries see fresh data distribution
+		this.cache.invalidateTable(tableName);
+
+		// Invalidate index caches for affected index values
+		if (virtualIndexes.length === 0) {
+			return; // No indexes to invalidate
+		}
+
+		if (statement.type === 'InsertStatement') {
+			this.invalidateIndexCacheForInsert(statement, virtualIndexes, params);
+		} else if (statement.type === 'UpdateStatement') {
+			this.invalidateIndexCacheForUpdate(statement, virtualIndexes, params);
+		} else if (statement.type === 'DeleteStatement') {
+			this.invalidateIndexCacheForDelete(statement, virtualIndexes, params);
+		}
+	}
+
+	/**
+	 * Invalidate index cache entries for INSERT operation
+	 */
+	private invalidateIndexCacheForInsert(
+		statement: InsertStatement,
+		virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
+		params: any[],
+	): void {
+		if (!statement.columns || statement.values.length === 0) {
+			return;
+		}
+
+		const row = statement.values[0]; // Only handle single-row inserts for now
+
+		for (const index of virtualIndexes) {
+			const indexColumns = JSON.parse(index.columns);
+			const keyValue = this.extractKeyValueFromRow(statement.columns, row, indexColumns, params);
+			if (keyValue) {
+				this.cache.invalidateIndexKeys(index.index_name, [keyValue]);
+			}
+		}
+	}
+
+	/**
+	 * Invalidate index cache entries for UPDATE operation
+	 */
+	private invalidateIndexCacheForUpdate(
+		statement: UpdateStatement,
+		virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
+		params: any[],
+	): void {
+		// Get the columns being updated
+		const updatedColumns = statement.set.map((s) => s.column.name);
+
+		// Only invalidate indexes that include updated columns
+		const affectedIndexes = virtualIndexes.filter((idx) => {
+			const indexCols = JSON.parse(idx.columns);
+			return indexCols.some((col: string) => updatedColumns.includes(col));
+		});
+
+		// For UPDATE, we can't easily determine the old/new values without querying
+		// So we invalidate the entire index cache for affected indexes
+		for (const index of affectedIndexes) {
+			this.cache.invalidateIndex(index.index_name);
+		}
+	}
+
+	/**
+	 * Invalidate index cache entries for DELETE operation
+	 */
+	private invalidateIndexCacheForDelete(
+		statement: DeleteStatement,
+		virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
+		params: any[],
+	): void {
+		// For DELETE, we can't easily determine which values are being deleted without querying
+		// So we invalidate the entire index cache for all indexes
+		for (const index of virtualIndexes) {
+			this.cache.invalidateIndex(index.index_name);
+		}
+	}
+
+	/**
+	 * Extract key value from a row for index invalidation
+	 */
+	private extractKeyValueFromRow(
+		columns: Array<{ name: string }>,
+		row: any[],
+		indexColumns: string[],
+		params: any[],
+	): string | null {
+		const values: any[] = [];
+
+		for (const colName of indexColumns) {
+			const columnIndex = columns.findIndex((col) => col.name === colName);
+			if (columnIndex === -1) {
+				return null; // Column not in INSERT
+			}
+
+			const valueExpression = row[columnIndex];
+			const value = this.extractValueFromExpression(valueExpression, params);
+
+			if (value === null || value === undefined) {
+				return null; // NULL values are not indexed
+			}
+
+			values.push(value);
+		}
+
+		if (values.length !== indexColumns.length) {
+			return null;
+		}
+
+		// Build the key value (same format as topology uses)
+		return indexColumns.length === 1 ? String(values[0]) : JSON.stringify(values);
+	}
+
+	/**
+	 * Extract value from an expression node (for cache invalidation)
+	 */
+	private extractValueFromExpression(expression: any, params: any[]): any {
+		if (!expression) {
+			return null;
+		}
+		if (expression.type === 'Literal') {
+			return expression.value;
+		} else if (expression.type === 'Placeholder') {
+			return params[expression.parameterIndex];
+		}
+		return null;
 	}
 
 	/**
