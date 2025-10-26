@@ -1,4 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
+import { withLogTags } from 'workers-tagged-logger';
+import { logger } from '../logger';
 import type { Statement, UpdateStatement, DeleteStatement, SelectStatement } from '@databases/sqlite-ast';
 
 // Type definitions for topology data structures
@@ -286,60 +288,97 @@ export class Topology extends DurableObject<Env> {
 	 * @param params - Query parameters
 	 * @returns Complete query plan with shard targets determined
 	 */
-	async getQueryPlanData(tableName: string, statement: Statement, params: any[]): Promise<QueryPlanData> {
-		this.ensureCreated();
+	async getQueryPlanData(tableName: string, statement: Statement, params: any[], correlationId?: string): Promise<QueryPlanData> {
+		return withLogTags({ source: 'Topology' }, async () => {
+			if (correlationId) {
+				logger.setTags({
+					correlationId,
+					requestId: correlationId,
+					component: 'Topology',
+					operation: 'getQueryPlanData',
+					table: tableName,
+				});
+			}
 
-		// Fetch ALL topology data for this table in a single pass
-		const tables = this.ctx.storage.sql.exec(
-			`SELECT * FROM tables WHERE table_name = ?`,
-			tableName
-		).toArray() as unknown as TableMetadata[];
+			const startTime = Date.now();
+			logger.debug('Getting query plan data', {
+				table: tableName,
+				queryType: statement.type,
+			});
 
-		const tableMetadata = tables[0];
-		if (!tableMetadata) {
-			throw new Error(`Table '${tableName}' not found in topology`);
-		}
+			this.ensureCreated();
 
-		const tableShards = this.ctx.storage.sql.exec(
-			`SELECT * FROM table_shards WHERE table_name = ? ORDER BY shard_id`,
-			tableName
-		).toArray() as unknown as TableShard[];
+			// Fetch ALL topology data for this table in a single pass
+			const tables = this.ctx.storage.sql.exec(
+				`SELECT * FROM tables WHERE table_name = ?`,
+				tableName
+			).toArray() as unknown as TableMetadata[];
 
-		if (tableShards.length === 0) {
-			throw new Error(`No shards found for table '${tableName}'`);
-		}
+			const tableMetadata = tables[0];
+			if (!tableMetadata) {
+				logger.error('Table not found in topology', { table: tableName });
+				throw new Error(`Table '${tableName}' not found in topology`);
+			}
 
-		// Only get ready indexes
-		const virtual_indexes = this.ctx.storage.sql.exec(
-			`SELECT index_name, columns, index_type FROM virtual_indexes WHERE table_name = ? AND status = 'ready'`,
-			tableName
-		).toArray() as unknown as Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>;
+			const tableShards = this.ctx.storage.sql.exec(
+				`SELECT * FROM table_shards WHERE table_name = ? ORDER BY shard_id`,
+				tableName
+			).toArray() as unknown as TableShard[];
 
-		// Determine which shards to query (using indexes if possible)
-		const shardsToQuery = await this.determineShardTargets(
-			statement,
-			tableMetadata,
-			tableShards,
-			virtual_indexes,
-			params
-		);
+			if (tableShards.length === 0) {
+				logger.error('No shards found for table', { table: tableName });
+				throw new Error(`No shards found for table '${tableName}'`);
+			}
 
-		// For INSERT: Handle index maintenance NOW (before query executes)
-		// We know the target shard and have all the data we need
-		if (statement.type === 'InsertStatement' && virtual_indexes.length > 0) {
-			await this.maintainIndexesForInsert(
-				statement as any,
+			// Only get ready indexes
+			const virtual_indexes = this.ctx.storage.sql.exec(
+				`SELECT index_name, columns, index_type FROM virtual_indexes WHERE table_name = ? AND status = 'ready'`,
+				tableName
+			).toArray() as unknown as Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>;
+
+			logger.debug('Topology data fetched', {
+				shardCount: tableShards.length,
+				indexCount: virtual_indexes.length,
+			});
+
+			// Determine which shards to query (using indexes if possible)
+			const shardsToQuery = await this.determineShardTargets(
+				statement,
+				tableMetadata,
+				tableShards,
 				virtual_indexes,
-				shardsToQuery[0], // INSERT always goes to single shard
 				params
 			);
-		}
 
-		return {
-			tableMetadata,
-			shardsToQuery,
-			virtualIndexes: virtual_indexes,
-		};
+			logger.info('Shard targets determined', {
+				shardsSelected: shardsToQuery.length,
+				totalShards: tableShards.length,
+				strategy: shardsToQuery.length === 1 ? 'single' : shardsToQuery.length === tableShards.length ? 'all' : 'subset',
+			});
+
+			// For INSERT: Handle index maintenance NOW (before query executes)
+			// We know the target shard and have all the data we need
+			if (statement.type === 'InsertStatement' && virtual_indexes.length > 0) {
+				logger.debug('Maintaining indexes for INSERT', {
+					indexCount: virtual_indexes.length,
+				});
+				await this.maintainIndexesForInsert(
+					statement as any,
+					virtual_indexes,
+					shardsToQuery[0], // INSERT always goes to single shard
+					params
+				);
+			}
+
+			const duration = Date.now() - startTime;
+			logger.debug('Query plan data completed', { duration });
+
+			return {
+				tableMetadata,
+				shardsToQuery,
+				virtualIndexes: virtual_indexes,
+			};
+		});
 	}
 
 	/**

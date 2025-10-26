@@ -1,0 +1,48 @@
+/**
+ * For more details on how to configure Wrangler, refer to:
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "big-daddy",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-10-08",
+	"compatibility_flags": ["nodejs_compat"],
+	"migrations": [
+		{
+			"new_sqlite_classes": ["Storage", "Topology"],
+			"tag": "v1",
+		},
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"class_name": "Storage",
+				"name": "STORAGE",
+			},
+			{
+				"class_name": "Topology",
+				"name": "TOPOLOGY",
+			},
+		],
+	},
+	"observability": {
+		"enabled": true,
+	},
+	"queues": {
+		"producers": [
+			{
+				"queue": "vitess-index-jobs",
+				"binding": "INDEX_QUEUE",
+			},
+		],
+		"consumers": [
+			{
+				"queue": "vitess-index-jobs",
+				"max_batch_size": 10,
+				"max_batch_timeout": 5,
+				"max_retries": 3,
+			},
+		],
+	},
+}

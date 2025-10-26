@@ -1,0 +1,85 @@
+# Artillery.io Load Test Configuration for Big Daddy
+# Run with: artillery run artillery.yml
+
+config:
+  target: "https://big-daddy-benchmarks.thomasankcorn.workers.dev"
+  phases:
+    # Warm-up phase
+    - duration: 30
+      arrivalRate: 5
+      name: "Warm-up"
+    # Ramp-up phase
+    - duration: 60
+      arrivalRate: 5
+      rampTo: 50
+      name: "Ramp-up load"
+    # Sustained load phase
+    - duration: 120
+      arrivalRate: 50
+      name: "Sustained load"
+    # Peak load phase
+    - duration: 60
+      arrivalRate: 100
+      name: "Peak load"
+    # Cool-down phase
+    - duration: 30
+      arrivalRate: 100
+      rampTo: 10
+      name: "Cool-down"
+
+  # Generate correlation IDs for distributed tracing
+  processor: "./artillery-processor.js"
+
+  # Metrics plugins
+  plugins:
+    metrics-by-endpoint:
+      # Group metrics by endpoint for detailed analysis
+      stripQueryString: true
+      metricsNamespace: "big_daddy_benchmark"
+
+scenarios:
+  # Read-heavy workload (typical web application)
+  - name: "Read-heavy workload"
+    weight: 60
+    flow:
+      - loop:
+          - get:
+              url: "/select-by-id?id={{ $randomNumber(1, 1000000) }}"
+              afterResponse: "captureCorrelationId"
+          - think: 0.1
+        count: 3
+      - get:
+          url: "/select-by-email?email=user{{ $randomNumber(1, 1000000) }}@example.com"
+          afterResponse: "captureCorrelationId"
+
+  # Write-heavy workload
+  - name: "Write-heavy workload"
+    weight: 20
+    flow:
+      - post:
+          url: "/insert"
+          afterResponse: "captureCorrelationId"
+      - think: 0.2
+      - post:
+          url: "/update"
+          afterResponse: "captureCorrelationId"
+
+  # Mixed workload (realistic)
+  - name: "Mixed workload"
+    weight: 15
+    flow:
+      - post:
+          url: "/mixed-workload"
+          afterResponse: "captureCorrelationId"
+
+  # Analytics queries (occasional heavy queries)
+  - name: "Analytics queries"
+    weight: 5
+    flow:
+      - get:
+          url: "/select-all"
+          afterResponse: "captureCorrelationId"
+      - think: 2
+      - get:
+          url: "/stats"
+          afterResponse: "captureCorrelationId"

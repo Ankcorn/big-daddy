@@ -316,7 +316,7 @@ describe('Conductor', () => {
 
 		// Verify updates
 		const allUsers = await conductor.sql`SELECT * FROM users ORDER BY id`;
-		expect(allUsers.rows.every(u => u.email === 'everyone@example.com')).toBe(true);
+		expect(allUsers.rows.every((u) => u.email === 'everyone@example.com')).toBe(true);
 
 		// Delete all users (no WHERE clause)
 		const deleteResult = await conductor.sql`DELETE FROM users`;
@@ -339,9 +339,7 @@ describe('Conductor', () => {
 		// Insert data that will be distributed across shards
 		const inserts = [];
 		for (let i = 0; i < 20; i++) {
-			inserts.push(
-				conductor.sql`INSERT INTO users (id, name, email) VALUES (${i}, ${`User ${i}`}, ${`user${i}@example.com`})`,
-			);
+			inserts.push(conductor.sql`INSERT INTO users (id, name, email) VALUES (${i}, ${`User ${i}`}, ${`user${i}@example.com`})`);
 		}
 		await Promise.all(inserts);
 
@@ -522,7 +520,8 @@ describe('Conductor', () => {
 		await topologyStub.updateIndexStatus('idx_cat_subcat_brand', 'ready');
 
 		// Query with full composite key
-		const result1 = await conductor.sql`SELECT * FROM products WHERE category = ${'Electronics'} AND subcategory = ${'Phones'} AND brand = ${'Apple'}`;
+		const result1 =
+			await conductor.sql`SELECT * FROM products WHERE category = ${'Electronics'} AND subcategory = ${'Phones'} AND brand = ${'Apple'}`;
 		expect(result1.rows).toHaveLength(1);
 		expect(result1.rows[0].name).toBe('iPhone');
 
@@ -565,7 +564,7 @@ describe('Conductor', () => {
 		// Should find 3 users: Alice, David (USA), and Bob (UK)
 		expect(result.rows).toHaveLength(3);
 
-		const names = result.rows.map(r => r.name).sort();
+		const names = result.rows.map((r) => r.name).sort();
 		expect(names).toEqual(['Alice', 'Bob', 'David']);
 	});
 
@@ -584,9 +583,7 @@ describe('Conductor', () => {
 
 		// Build the index
 		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
-		await topologyStub.batchUpsertIndexEntries('idx_category', [
-			{ keyValue: 'Electronics', shardIds: [0] },
-		]);
+		await topologyStub.batchUpsertIndexEntries('idx_category', [{ keyValue: 'Electronics', shardIds: [0] }]);
 		await topologyStub.updateIndexStatus('idx_category', 'ready');
 
 		// Query with IN containing non-existent values
@@ -623,8 +620,7 @@ describe('Conductor', () => {
 
 		// Should return only the 2 matching products
 		expect(result.rows).toHaveLength(2);
-		const names = result.rows.map(r => r.name).sort();
+		const names = result.rows.map((r) => r.name).sort();
 		expect(names).toEqual(['Novel', 'Phone']);
 	});
 });
-

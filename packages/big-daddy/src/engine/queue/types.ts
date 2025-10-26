@@ -13,6 +13,7 @@ export interface IndexBuildJob {
 	columns: string[]; // Array of column names for composite indexes
 	index_name: string;
 	created_at: string;
+	correlation_id?: string; // Optional correlation ID for tracing
 }
 
 /**
@@ -28,6 +29,7 @@ export interface IndexMaintenanceJob {
 	affected_indexes: string[];    // Index names that need updating
 	updated_columns?: string[];    // For UPDATE: which columns changed
 	created_at: string;
+	correlation_id?: string; // Optional correlation ID for tracing
 }
 
 /**

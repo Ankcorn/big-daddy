@@ -6,6 +6,8 @@
  * - IndexMaintenanceJob: Maintain indexes after UPDATE/DELETE operations
  */
 
+import { withLogTags } from 'workers-tagged-logger';
+import { logger } from './logger';
 import type { IndexJob, IndexBuildJob, IndexMaintenanceJob, MessageBatch } from './engine/queue/types';
 import type { Storage, QueryResult } from './engine/storage';
 import type { Topology } from './engine/topology';
@@ -14,39 +16,82 @@ import type { Topology } from './engine/topology';
  * Queue message handler
  * Receives batches of up to 10 messages and processes them
  */
-export async function queueHandler(batch: MessageBatch<IndexJob>, env: Env): Promise<void> {
-	console.log(`Processing batch of ${batch.messages.length} index jobs from queue: ${batch.queue}`);
+export async function queueHandler(batch: MessageBatch<IndexJob>, env: Env, batchCorrelationId?: string): Promise<void> {
+	return withLogTags({ source: 'QueueConsumer' }, async () => {
+		const cid = batchCorrelationId || crypto.randomUUID();
+		logger.setTags({
+			correlationId: cid,
+			requestId: cid,
+			component: 'QueueConsumer',
+			operation: 'queueHandler',
+		});
 
-	// Process messages in parallel where possible
-	const results = await Promise.allSettled(
-		batch.messages.map(async (message) => {
-			try {
-				await processIndexJob(message.body, env);
-				console.log(`Successfully processed job ${message.id}:`, message.body.type);
-			} catch (error) {
-				console.error(`Failed to process job ${message.id}:`, error);
-				// Throwing will cause the message to be retried
-				throw error;
-			}
-		}),
-	);
+		logger.info('Processing queue batch', {
+			batchSize: batch.messages.length,
+			queue: batch.queue,
+		});
 
-	// Log summary
-	const successful = results.filter((r) => r.status === 'fulfilled').length;
-	const failed = results.filter((r) => r.status === 'rejected').length;
-	console.log(`Batch complete: ${successful} succeeded, ${failed} failed`);
+		// Process messages in parallel where possible
+		const results = await Promise.allSettled(
+			batch.messages.map(async (message) => {
+				try {
+					const jobCorrelationId = message.body.correlation_id || cid;
+					logger.setTags({
+						correlationId: jobCorrelationId,
+						requestId: jobCorrelationId,
+						jobId: message.id,
+						jobType: message.body.type,
+					});
+
+					logger.info('Processing queue message', {
+						jobId: message.id,
+						jobType: message.body.type,
+						attempts: message.attempts,
+					});
+
+					await processIndexJob(message.body, env, jobCorrelationId);
+
+					logger.info('Successfully processed job', {
+						jobId: message.id,
+						jobType: message.body.type,
+						status: 'success',
+					});
+				} catch (error) {
+					logger.error('Failed to process job', {
+						jobId: message.id,
+						jobType: message.body.type,
+						error: error instanceof Error ? error.message : String(error),
+						status: 'failure',
+					});
+					// Throwing will cause the message to be retried
+					throw error;
+				}
+			}),
+		);
+
+		// Log summary
+		const successful = results.filter((r) => r.status === 'fulfilled').length;
+		const failed = results.filter((r) => r.status === 'rejected').length;
+
+		logger.info('Batch processing complete', {
+			batchSize: batch.messages.length,
+			successful,
+			failed,
+			status: failed > 0 ? 'partial' : 'success',
+		});
+	});
 }
 
 /**
  * Process a single index job
  */
-async function processIndexJob(job: IndexJob, env: Env): Promise<void> {
+async function processIndexJob(job: IndexJob, env: Env, correlationId?: string): Promise<void> {
 	switch (job.type) {
 		case 'build_index':
-			await processBuildIndexJob(job, env);
+			await processBuildIndexJob(job, env, correlationId);
 			break;
 		case 'maintain_index':
-			await processIndexMaintenanceJob(job, env);
+			await processIndexMaintenanceJob(job, env, correlationId);
 			break;
 		default:
 			throw new Error(`Unknown job type: ${(job as any).type}`);
@@ -63,9 +108,18 @@ async function processIndexJob(job: IndexJob, env: Env): Promise<void> {
  *    - Create index entry mapping value → shard_ids
  * 3. Update index status to 'ready' or 'failed'
  */
-async function processBuildIndexJob(job: IndexBuildJob, env: Env): Promise<void> {
+async function processBuildIndexJob(job: IndexBuildJob, env: Env, correlationId?: string): Promise<void> {
 	const columnList = job.columns.join(', ');
-	console.log(`Building index ${job.index_name} on ${job.table_name}(${columnList})`);
+	logger.setTags({
+		table: job.table_name,
+		indexName: job.index_name,
+	});
+
+	logger.info('Building virtual index', {
+		indexName: job.index_name,
+		table: job.table_name,
+		columns: columnList,
+	});
 
 	const topologyId = env.TOPOLOGY.idFromName(job.database_id);
 	const topologyStub = env.TOPOLOGY.get(topologyId);
@@ -76,10 +130,13 @@ async function processBuildIndexJob(job: IndexBuildJob, env: Env): Promise<void>
 		const tableShards = topology.table_shards.filter((s) => s.table_name === job.table_name);
 
 		if (tableShards.length === 0) {
+			logger.error('No shards found for table', { table: job.table_name });
 			throw new Error(`No shards found for table '${job.table_name}'`);
 		}
 
-		console.log(`Found ${tableShards.length} shards for table ${job.table_name}`);
+		logger.info('Found shards for table', {
+			shardCount: tableShards.length,
+		});
 
 		// 2. Collect all distinct values from all shards
 		// Map: composite key value → Set<shard_id>
@@ -145,7 +202,9 @@ async function processBuildIndexJob(job: IndexBuildJob, env: Env): Promise<void>
 			}
 		}
 
-		console.log(`Found ${valueToShards.size} distinct values across all shards`);
+		logger.info('Collected distinct values from shards', {
+			distinctValues: valueToShards.size,
+		});
 
 		// 3. Create index entries in batch
 		const entries = Array.from(valueToShards.entries()).map(([keyValue, shardIdSet]) => ({
@@ -155,15 +214,24 @@ async function processBuildIndexJob(job: IndexBuildJob, env: Env): Promise<void>
 
 		if (entries.length > 0) {
 			const result = await topologyStub.batchUpsertIndexEntries(job.index_name, entries);
-			console.log(`Created ${result.count} index entries`);
+			logger.info('Created index entries', {
+				entryCount: result.count,
+			});
 		}
 
 		// 4. Update index status to 'ready'
 		await topologyStub.updateIndexStatus(job.index_name, 'ready');
 
-		console.log(`Index ${job.index_name} build complete - ${entries.length} unique values indexed`);
+		logger.info('Index build complete', {
+			indexName: job.index_name,
+			uniqueValues: entries.length,
+			status: 'ready',
+		});
 	} catch (error) {
-		console.error(`Failed to build index ${job.index_name}:`, error);
+		logger.error('Failed to build index', {
+			indexName: job.index_name,
+			error: error instanceof Error ? error.message : String(error),
+		});
 
 		// Update index status to 'failed'
 		const errorMessage = error instanceof Error ? error.message : String(error);
@@ -182,7 +250,16 @@ async function processBuildIndexJob(job: IndexBuildJob, env: Env): Promise<void>
  * 3. Compare with topology's current state
  * 4. Apply changes in a single batched call
  */
-async function processIndexMaintenanceJob(job: IndexMaintenanceJob, env: Env): Promise<void> {
+async function processIndexMaintenanceJob(job: IndexMaintenanceJob, env: Env, correlationId?: string): Promise<void> {
+	logger.setTags({
+		table: job.table_name,
+	});
+
+	logger.info('Maintaining indexes after write operation', {
+		operation: job.operation,
+		affectedIndexes: job.affected_indexes.length,
+		shardCount: job.shard_ids.length,
+	});
 	console.log(`Maintaining indexes for ${job.operation} on ${job.table_name}, shards: ${job.shard_ids.join(',')}`);
 
 	const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(job.database_id));

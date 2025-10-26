@@ -1,0 +1,25 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "big-daddy-benchmarks",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-10-26",
+	"compatibility_flags": ["nodejs_compat"],
+	"services": [
+		{
+			"binding": "BIG_DADDY",
+			"service": "big-daddy"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "TOPOLOGY",
+				"class_name": "Topology",
+				"script_name": "big-daddy"
+			}
+		]
+	},
+	"observability": {
+		"enabled": true
+	}
+}

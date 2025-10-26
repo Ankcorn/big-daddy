@@ -8,6 +8,8 @@ import type {
 	CreateTableStatement,
 	CreateIndexStatement,
 } from '@databases/sqlite-ast';
+import { withLogTags } from 'workers-tagged-logger';
+import { logger } from '../logger';
 import type { Storage, QueryResult as StorageQueryResult, QueryType } from './storage';
 import type { Topology, TableMetadata, QueryPlanData } from './topology';
 import { extractTableName, getQueryType, buildQuery } from './utils/ast-utils';
@@ -75,78 +77,145 @@ export class ConductorClient {
 	 * const result = await conductor.sql`SELECT * FROM users WHERE id = ${userId}`;
 	 * await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)`;
 	 */
-	sql = async (strings: TemplateStringsArray, ...values: any[]): Promise<QueryResult> => {
-		// STEP 1: Parse - Build and parse the SQL query
-		const { query, params } = buildQuery(strings, values);
-		const statement = parse(query);
+	sql = async (strings: TemplateStringsArray, correlationId?: string, ...values: any[]): Promise<QueryResult> => {
+		return withLogTags({ source: 'Conductor' }, async () => {
+			const startTime = Date.now();
+			const cid = correlationId || crypto.randomUUID();
 
-		// Handle CREATE TABLE statements (special case - affects all nodes)
-		if (statement.type === 'CreateTableStatement') {
-			return await this.handleCreateTable(statement as CreateTableStatement, query);
-		}
+			logger.setTags({
+				correlationId: cid,
+				requestId: cid,
+				component: 'Conductor',
+				operation: 'sql',
+				databaseId: this.databaseId,
+			});
 
-		// Handle CREATE INDEX statements (special case - creates virtual index)
-		if (statement.type === 'CreateIndexStatement') {
-			return await this.handleCreateIndex(statement as CreateIndexStatement);
-		}
+			logger.debug('Starting SQL query execution');
 
-		// STEP 2: Route - Get ALL topology data (with caching)
-		const tableName = extractTableName(statement);
-		if (!tableName) {
-			throw new Error('Could not determine table name from query');
-		}
+			// STEP 1: Parse - Build and parse the SQL query
+			const { query, params } = buildQuery(strings, values);
+			const statement = parse(query);
 
-		// **CACHED TOPOLOGY CALL** - Get all topology data AND determine shard targets
-		// All planning logic (including index usage) happens inside the Topology DO
-		// Cache eliminates this call for repeated queries with same predicates
-		const { planData, cacheHit } = await this.getCachedQueryPlanData(tableName, statement, params);
+			logger.debug('Query parsed', {
+				queryType: statement.type,
+			});
 
-		// Shard targets are already determined by Topology!
-		const shardsToQuery = planData.shardsToQuery;
+			// Handle CREATE TABLE statements (special case - affects all nodes)
+			if (statement.type === 'CreateTableStatement') {
+				logger.info('Handling CREATE TABLE', {
+					table: (statement as CreateTableStatement).table.name,
+				});
+				const result = await this.handleCreateTable(statement as CreateTableStatement, query, cid);
+				const duration = Date.now() - startTime;
+				logger.info('CREATE TABLE completed', {
+					duration,
+					status: 'success',
+				});
+				return result;
+			}
 
-		// STEP 3: Execute - Run query on all target shards in parallel
-		const queryType = getQueryType(statement);
-		const results = await this.executeOnShards(shardsToQuery, query, params, queryType);
+			// Handle CREATE INDEX statements (special case - creates virtual index)
+			if (statement.type === 'CreateIndexStatement') {
+				logger.info('Handling CREATE INDEX', {
+					indexName: (statement as CreateIndexStatement).name.name,
+					table: (statement as CreateIndexStatement).table.name,
+				});
+				const result = await this.handleCreateIndex(statement as CreateIndexStatement, cid);
+				const duration = Date.now() - startTime;
+				logger.info('CREATE INDEX completed', {
+					duration,
+					status: 'success',
+				});
+				return result;
+			}
 
-		// STEP 3.5: Index Maintenance - Enqueue async maintenance for UPDATE/DELETE
-		// INSERT: Already handled in getQueryPlanData() (before query execution)
-		// UPDATE/DELETE: Enqueue to queue for async processing (no blocking!)
-		if ((statement.type === 'UpdateStatement' || statement.type === 'DeleteStatement') && planData.virtualIndexes.length > 0) {
-			await this.enqueueIndexMaintenanceJob(
-				tableName,
-				statement,
-				shardsToQuery.map((s) => s.shard_id),
-				planData.virtualIndexes,
-			);
-		}
+			// STEP 2: Route - Get ALL topology data (with caching)
+			const tableName = extractTableName(statement);
+			if (!tableName) {
+				logger.error('Failed to extract table name from query', {
+					queryType: statement.type,
+				});
+				throw new Error('Could not determine table name from query');
+			}
 
-		// STEP 3.6: Cache Invalidation - Invalidate cache for write operations
-		// This ensures the cache stays fresh after data modifications
-		if (statement.type === 'InsertStatement' || statement.type === 'UpdateStatement' || statement.type === 'DeleteStatement') {
-			this.invalidateCacheForWrite(tableName, statement, planData.virtualIndexes, params);
-		}
+			logger.setTags({ table: tableName });
 
-		// STEP 4: Merge - Combine results from all shards
-		const result = this.mergeResults(results, statement);
+			// **CACHED TOPOLOGY CALL** - Get all topology data AND determine shard targets
+			// All planning logic (including index usage) happens inside the Topology DO
+			// Cache eliminates this call for repeated queries with same predicates
+			const { planData, cacheHit } = await this.getCachedQueryPlanData(tableName, statement, params, cid);
 
-		// STEP 5: Add cache statistics to result (for SELECT queries)
-		if (statement.type === 'SelectStatement') {
-			const stats = this.cache.getStats();
-			result.cacheStats = {
+			logger.info('Query plan determined', {
 				cacheHit,
-				totalHits: stats.hits,
-				totalMisses: stats.misses,
-				cacheSize: stats.size,
-			};
-		}
+				shardsSelected: planData.shardsToQuery.length,
+				indexesUsed: planData.virtualIndexes.length,
+			});
 
-		return result;
+			// Shard targets are already determined by Topology!
+			const shardsToQuery = planData.shardsToQuery;
+
+			// STEP 3: Execute - Run query on all target shards in parallel
+			const queryType = getQueryType(statement);
+			const results = await this.executeOnShards(shardsToQuery, query, params, queryType, cid);
+
+			logger.info('Shard execution completed', {
+				shardsQueried: shardsToQuery.length,
+			});
+
+			// STEP 3.5: Index Maintenance - Enqueue async maintenance for UPDATE/DELETE
+			// INSERT: Already handled in getQueryPlanData() (before query execution)
+			// UPDATE/DELETE: Enqueue to queue for async processing (no blocking!)
+			if ((statement.type === 'UpdateStatement' || statement.type === 'DeleteStatement') && planData.virtualIndexes.length > 0) {
+				await this.enqueueIndexMaintenanceJob(
+					tableName,
+					statement,
+					shardsToQuery.map((s) => s.shard_id),
+					planData.virtualIndexes,
+					cid,
+				);
+				logger.debug('Index maintenance job enqueued', {
+					indexCount: planData.virtualIndexes.length,
+				});
+			}
+
+			// STEP 3.6: Cache Invalidation - Invalidate cache for write operations
+			// This ensures the cache stays fresh after data modifications
+			if (statement.type === 'InsertStatement' || statement.type === 'UpdateStatement' || statement.type === 'DeleteStatement') {
+				this.invalidateCacheForWrite(tableName, statement, planData.virtualIndexes, params);
+				logger.debug('Cache invalidated for write operation');
+			}
+
+			// STEP 4: Merge - Combine results from all shards
+			const result = this.mergeResults(results, statement);
+
+			// STEP 5: Add cache statistics to result (for SELECT queries)
+			if (statement.type === 'SelectStatement') {
+				const stats = this.cache.getStats();
+				result.cacheStats = {
+					cacheHit,
+					totalHits: stats.hits,
+					totalMisses: stats.misses,
+					cacheSize: stats.size,
+				};
+			}
+
+			const duration = Date.now() - startTime;
+			logger.info('SQL query execution completed', {
+				duration,
+				queryType: statement.type,
+				rowCount: result.rows.length,
+				rowsAffected: result.rowsAffected,
+				status: 'success',
+			});
+
+			return result;
+		});
 	};
 
 	/**
 	 * Handle CREATE TABLE statement execution
 	 */
-	private async handleCreateTable(statement: CreateTableStatement, query: string): Promise<QueryResult> {
+	private async handleCreateTable(statement: CreateTableStatement, query: string, correlationId?: string): Promise<QueryResult> {
 		const tableName = statement.table.name;
 
 		// Get topology stub
@@ -210,7 +279,7 @@ export class ConductorClient {
 	 * 4. Enqueues an IndexBuildJob to the queue for async processing (builds virtual index metadata)
 	 * 5. Returns immediately to the client (non-blocking)
 	 */
-	private async handleCreateIndex(statement: CreateIndexStatement): Promise<QueryResult> {
+	private async handleCreateIndex(statement: CreateIndexStatement, correlationId?: string): Promise<QueryResult> {
 		const indexName = statement.name.name;
 		const tableName = statement.table.name;
 
@@ -279,6 +348,7 @@ export class ConductorClient {
 			columns: columns,
 			index_name: indexName,
 			created_at: new Date().toISOString(),
+			correlation_id: correlationId,
 		});
 
 		return {
@@ -324,7 +394,7 @@ export class ConductorClient {
 	 *
 	 * @returns Query plan data and whether it was a cache hit
 	 */
-	private async getCachedQueryPlanData(tableName: string, statement: Statement, params: any[]): Promise<{ planData: QueryPlanData; cacheHit: boolean }> {
+	private async getCachedQueryPlanData(tableName: string, statement: Statement, params: any[], correlationId?: string): Promise<{ planData: QueryPlanData; cacheHit: boolean }> {
 		// Try to build a cache key for this query
 		const cacheKey = this.cache.buildQueryPlanCacheKey(tableName, statement, params);
 
@@ -332,19 +402,23 @@ export class ConductorClient {
 		if (cacheKey) {
 			const cached = this.cache.getQueryPlanData(cacheKey);
 			if (cached) {
+				logger.debug('Query plan cache hit', { cacheKey });
 				return { planData: cached, cacheHit: true };
 			}
 		}
 
+		logger.debug('Query plan cache miss, fetching from Topology', { cacheKey });
+
 		// Cache miss - fetch from Topology DO
 		const topologyId = this.topology.idFromName(this.databaseId);
 		const topologyStub = this.topology.get(topologyId);
-		const planData = await topologyStub.getQueryPlanData(tableName, statement, params);
+		const planData = await topologyStub.getQueryPlanData(tableName, statement, params, correlationId);
 
 		// Store in cache if cacheable
 		if (cacheKey) {
 			const ttl = this.cache.getTTLForQuery(statement);
 			this.cache.setQueryPlanData(cacheKey, planData, ttl);
+			logger.debug('Query plan cached', { cacheKey, ttl });
 		}
 
 		return { planData, cacheHit: false };
@@ -505,35 +579,77 @@ export class ConductorClient {
 		query: string,
 		params: any[],
 		queryType: QueryType,
+		correlationId?: string,
 	): Promise<QueryResult[]> {
 		const BATCH_SIZE = 7;
 		const allResults: QueryResult[] = [];
 
+		logger.debug('Executing query on shards', {
+			shardCount: shardsToQuery.length,
+			batchSize: BATCH_SIZE,
+			batchCount: Math.ceil(shardsToQuery.length / BATCH_SIZE),
+		});
+
 		// Process shards in batches of 7
 		for (let i = 0; i < shardsToQuery.length; i += BATCH_SIZE) {
 			const batch = shardsToQuery.slice(i, i + BATCH_SIZE);
+			const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+			const startTime = Date.now();
+
+			logger.debug('Processing shard batch', {
+				batchNumber: batchNum,
+				batchSize: batch.length,
+			});
 
 			const batchResults = await Promise.all(
 				batch.map(async (shard) => {
+					const shardStartTime = Date.now();
 					// Get the storage stub using the node_id from table_shards mapping
 					const storageId = this.storage.idFromName(shard.node_id);
 					const storageStub = this.storage.get(storageId);
 
-					// Execute the query (single query always returns StorageQueryResult)
-					const rawResult = await storageStub.executeQuery({
-						query,
-						params,
-						queryType,
-					});
+					try {
+						// Execute the query (single query always returns StorageQueryResult)
+						const rawResult = await storageStub.executeQuery({
+							query,
+							params,
+							queryType,
+							correlationId,
+						});
 
-					// Convert StorageQueryResult to QueryResult
-					const result = rawResult as unknown as StorageQueryResult;
-					return {
-						rows: result.rows,
-						rowsAffected: result.rowsAffected,
-					};
+						const shardDuration = Date.now() - shardStartTime;
+
+						// Convert StorageQueryResult to QueryResult
+						const result = rawResult as unknown as StorageQueryResult;
+
+						logger.debug('Shard query completed', {
+							shardId: shard.shard_id,
+							nodeId: shard.node_id,
+							duration: shardDuration,
+							rowCount: result.rows.length,
+						});
+						return {
+							rows: result.rows,
+							rowsAffected: result.rowsAffected,
+						};
+					} catch (error) {
+						logger.error('Shard query failed', {
+							shardId: shard.shard_id,
+							nodeId: shard.node_id,
+							error: error instanceof Error ? error.message : String(error),
+							duration: Date.now() - shardStartTime,
+						});
+						throw error;
+					}
 				}),
 			);
+
+			const batchDuration = Date.now() - startTime;
+			logger.debug('Shard batch completed', {
+				batchNumber: batchNum,
+				duration: batchDuration,
+				resultsCount: batchResults.length,
+			});
 
 			allResults.push(...batchResults);
 		}
@@ -562,6 +678,7 @@ export class ConductorClient {
 		statement: UpdateStatement | DeleteStatement,
 		shardIds: number[],
 		virtualIndexes: Array<{ index_name: string; columns: string }>,
+		correlationId?: string,
 	): Promise<void> {
 		// For UPDATE: determine which indexes are affected by the updated columns
 		const updatedColumns = statement.type === 'UpdateStatement' ? statement.set.map((s) => s.column.name) : undefined;
@@ -587,7 +704,14 @@ export class ConductorClient {
 			affected_indexes: affectedIndexes.map((idx) => idx.index_name),
 			updated_columns: updatedColumns,
 			created_at: new Date().toISOString(),
+			correlation_id: correlationId,
 		};
+
+		logger.debug('Enqueuing index maintenance job', {
+			operation: job.operation,
+			affectedIndexes: job.affected_indexes.length,
+			shardCount: shardIds.length,
+		});
 
 		await this.enqueueIndexJob(job);
 	}
@@ -620,6 +744,7 @@ export class ConductorClient {
 				const { queueHandler } = await import('../queue-consumer');
 
 				// Simulate queue batch with this single message
+				const jobCorrelationId = job.correlation_id || crypto.randomUUID();
 				await queueHandler(
 					{
 						queue: 'vitess-index-jobs',
@@ -633,6 +758,7 @@ export class ConductorClient {
 						],
 					},
 					this.env,
+					jobCorrelationId,
 				);
 			}
 		} catch (error) {

@@ -1,0 +1,28 @@
+# Simple Artillery.io configuration for quick smoke tests
+# Run with: artillery run artillery-simple.yml
+
+config:
+  target: "https://big-daddy-benchmarks.thomasankcorn.workers.dev"
+  phases:
+    # Single phase: 10 requests per second for 30 seconds
+    - duration: 30
+      arrivalRate: 10
+      name: "Simple load test"
+
+scenarios:
+  - name: "Mixed operations"
+    flow:
+      # Select by ID (fast, single shard)
+      - get:
+          url: "/select-by-id?id={{ $randomNumber(1, 100000) }}"
+
+      # Insert (write operation)
+      - post:
+          url: "/insert"
+
+      # Select by email (indexed lookup)
+      - get:
+          url: "/select-by-email?email=user{{ $randomNumber(1, 100000) }}@example.com"
+
+      # Small delay between iterations
+      - think: 0.5
