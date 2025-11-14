@@ -153,5 +153,19 @@ describe("generator", () => {
       const generated = generate(ast);
       expect(generated).toBe(sql);
     });
+
+    it("should generate DROP TABLE", () => {
+      const sql = "DROP TABLE users";
+      const ast = parse(sql);
+      const generated = generate(ast);
+      expect(generated).toBe(sql);
+    });
+
+    it("should generate DROP TABLE IF EXISTS", () => {
+      const sql = "DROP TABLE IF EXISTS users";
+      const ast = parse(sql);
+      const generated = generate(ast);
+      expect(generated).toBe(sql);
+    });
   });
 });

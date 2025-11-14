@@ -61,7 +61,7 @@ export class Topology extends DurableObject<Env> {
 
 		// Initialize feature operation handlers with direct storage access
 		this.crud = new CRUDOperations(this.ctx.storage);
-		this.resharding = new ReshardingOperations(this.ctx.storage);
+		this.resharding = new ReshardingOperations(this.ctx.storage, this.env);
 		this.virtualIndexes = new VirtualIndexOperations(this.ctx.storage);
 		// AdministrationOperations needs reference to Topology for cross-module method access
 		this.administration = new AdministrationOperations(this.ctx.storage, this.env, this);

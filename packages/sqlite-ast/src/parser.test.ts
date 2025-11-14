@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parse } from "./parser";
-import type { SelectStatement } from "./types";
+import type { SelectStatement, InsertStatement, UpdateStatement, DeleteStatement, PragmaStatement, DropTableStatement } from "./types";
 
 describe("parser", () => {
   describe("SELECT statements", () => {
@@ -860,12 +860,13 @@ describe("parser", () => {
       const ast = parse(sql);
 
       expect(ast.type).toBe("PragmaStatement");
-      expect((ast as any).arguments).toHaveLength(2);
-      expect((ast as any).arguments[0]).toEqual({
+      const pragmaStmt = ast as PragmaStatement;
+      expect(pragmaStmt.arguments).toHaveLength(2);
+      expect(pragmaStmt.arguments![0]).toEqual({
         type: "Identifier",
         name: "users",
       });
-      expect((ast as any).arguments[1]).toEqual({
+      expect(pragmaStmt.arguments![1]).toEqual({
         type: "Literal",
         value: 10,
         raw: "10",
@@ -964,6 +965,34 @@ describe("parser", () => {
         left: { type: "Identifier", name: "id" },
         right: { type: "Placeholder", parameterIndex: 0 },
       });
+    });
+  });
+
+  describe("DROP TABLE statements", () => {
+    it("should parse DROP TABLE", () => {
+      const sql = "DROP TABLE users";
+      const ast = parse(sql);
+
+      expect(ast.type).toBe("DropTableStatement");
+      const dropStmt = ast as DropTableStatement;
+      expect(dropStmt.table).toEqual({
+        type: "Identifier",
+        name: "users",
+      });
+      expect(dropStmt.ifExists).toBeUndefined();
+    });
+
+    it("should parse DROP TABLE IF EXISTS", () => {
+      const sql = "DROP TABLE IF EXISTS users";
+      const ast = parse(sql);
+
+      expect(ast.type).toBe("DropTableStatement");
+      const dropStmt = ast as DropTableStatement;
+      expect(dropStmt.table).toEqual({
+        type: "Identifier",
+        name: "users",
+      });
+      expect(dropStmt.ifExists).toBe(true);
     });
   });
 });

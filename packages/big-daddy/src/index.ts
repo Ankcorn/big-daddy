@@ -56,6 +56,7 @@ export interface BigDaddyEnv {
 	STORAGE: DurableObjectNamespace<Storage>;
 	TOPOLOGY: DurableObjectNamespace<Topology>;
 	INDEX_QUEUE: Queue;
+	AI: Ai; // Workers AI binding for natural language query parsing
 }
 
 /**

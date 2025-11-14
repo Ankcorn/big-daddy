@@ -5,6 +5,7 @@ import { HomePage } from './dashboard/home';
 import { DashboardPage } from './dashboard/database';
 import { ErrorPage } from './dashboard/error';
 import { createConnection } from './index';
+import { parseQueryWithAI } from './dashboard/utils/ai-query';
 
 /**
  * Dashboard - Static HTML interface for viewing database topology
@@ -159,19 +160,41 @@ dashboard.post('/dash/:databaseId/sql', async (c) => {
 			return c.redirect(`/dash/${databaseId}?sqlError=${error}`);
 		}
 
+		// Try to parse the query with AI if parsing fails
+		let finalQuery = query.toString();
+		let displayQuery = query.toString(); // Track what to display to the user
+		let usedAI = false;
+
+		if (c.env.AI) {
+			try {
+				finalQuery = await parseQueryWithAI(query.toString(), c.env.AI);
+				// If AI was used (query was transformed), swap the display to show the AI-generated SQL
+				if (finalQuery !== query.toString()) {
+					usedAI = true;
+					displayQuery = finalQuery;
+				}
+			} catch (aiError) {
+				const errorMessage = aiError instanceof Error ? aiError.message : String(aiError);
+				const encodedError = encodeURIComponent(errorMessage);
+				const encodedQuery = encodeURIComponent(query.toString());
+				return c.redirect(`/dash/${databaseId}?sqlError=${encodedError}&q=${encodedQuery}`);
+			}
+		}
+
 		// Create connection to the database
 		const sql = await createConnection(databaseId, { nodes: 3 }, c.env);
 
 		// Parse query string to template literal format
-		const strings = [query.toString()] as any as TemplateStringsArray;
+		const strings = [finalQuery] as any as TemplateStringsArray;
 		const result = await sql(strings);
 
 		// Log the result (could store in session/flash if needed)
 		console.log('SQL execution result:', result);
 
-		// Redirect back to the dashboard with result and query
+		// Redirect back to the dashboard with result and the display query
+		// If AI was used, show the AI-generated SQL instead of the user's input
 		const resultJson = encodeURIComponent(JSON.stringify(result));
-		const encodedQuery = encodeURIComponent(query.toString());
+		const encodedQuery = encodeURIComponent(displayQuery);
 		return c.redirect(`/dash/${databaseId}?sqlResult=${resultJson}&q=${encodedQuery}`);
 	} catch (error) {
 		console.error('SQL execution error:', error);

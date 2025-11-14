@@ -415,6 +415,25 @@ async function processReshardTableJob(job: ReshardTableJob, env: Env, correlatio
 		const topologyStub = env.TOPOLOGY.get(topologyId);
 
 	try {
+		// Get initial source count for debugging
+		const topology = await topologyStub.getTopology();
+		const sourceShard = topology.table_shards.find(
+			s => s.table_name === tableName && s.shard_id === sourceShardId
+		);
+		let initialSourceCount = 0;
+		if (sourceShard) {
+			const sourceStorageId = env.STORAGE.idFromName(sourceShard.node_id);
+			const sourceStorageStub = env.STORAGE.get(sourceStorageId);
+			const countResult = await sourceStorageStub.executeQuery({
+				query: `SELECT COUNT(*) as count FROM ${tableName} WHERE _virtualShard = ?`,
+				params: [sourceShardId],
+				queryType: 'SELECT',
+			});
+			initialSourceCount = (countResult as any).rows[0]?.count || 0;
+		}
+
+		logger.info('Resharding initial state', { table: tableName, initialSourceCount, sourceShardId });
+
 		// Create async job record
 		await topologyStub.createAsyncJob(jobId, 'reshard_table', tableName, {
 			source_shard_id: sourceShardId,
@@ -428,9 +447,48 @@ async function processReshardTableJob(job: ReshardTableJob, env: Env, correlatio
 
 		// Mark resharding as starting (transition to 'copying' phase)
 		await topologyStub.startResharding(tableName);
-		logger.info('Resharding started', { table: tableName, status: 'copying' });
+		logger.info('Resharding started', { table: tableName, status: 'copying', initialSourceCount });
 
 		// Phase 3B: Copy data from source shard to target shards
+		// First, log the initial state of target shards before copy
+		const topologyForPreCopy = await topologyStub.getTopology();
+		const preCopyTargetCounts: { [key: number]: number } = {};
+		const preCopyVirtualShardBreakdown: { [key: number]: { [key: number]: number } } = {};
+		for (const targetShardId of targetShardIds) {
+			const targetShard = topologyForPreCopy.table_shards.find(
+				s => s.table_name === tableName && s.shard_id === targetShardId
+			);
+			if (targetShard) {
+				const targetStorageId = env.STORAGE.idFromName(targetShard.node_id);
+				const targetStorageStub = env.STORAGE.get(targetStorageId);
+
+				// Get total count filtered by target shard ID
+				const countResult = await targetStorageStub.executeQuery({
+					query: `SELECT COUNT(*) as count FROM ${tableName} WHERE _virtualShard = ?`,
+					params: [targetShardId],
+					queryType: 'SELECT',
+				});
+				preCopyTargetCounts[targetShardId] = (countResult as any).rows[0]?.count || 0;
+
+				// Get breakdown by virtualShard value to detect unexpected data
+				const breakdown = await targetStorageStub.executeQuery({
+					query: `SELECT _virtualShard, COUNT(*) as count FROM ${tableName} GROUP BY _virtualShard`,
+					params: [],
+					queryType: 'SELECT',
+				});
+				const breakdownMap: { [key: number]: number } = {};
+				for (const row of (breakdown as any).rows) {
+					breakdownMap[row._virtualShard] = row.count;
+				}
+				preCopyVirtualShardBreakdown[targetShardId] = breakdownMap;
+			}
+		}
+		logger.info('Pre-copy target shard state', {
+			preCopyTargetCounts,
+			targetShardIds,
+			preCopyVirtualShardBreakdown
+		});
+
 		const copyStats = await copyShardData(
 			env,
 			job.database_id,
@@ -440,7 +498,34 @@ async function processReshardTableJob(job: ReshardTableJob, env: Env, correlatio
 			job.shard_key,
 			job.shard_strategy
 		);
-		logger.info('Phase 3B: Data copy completed', { ...copyStats });
+
+		// Log post-copy state to verify what was actually written
+		const postCopyVirtualShardBreakdown: { [key: number]: { [key: number]: number } } = {};
+		for (const targetShardId of targetShardIds) {
+			const targetShard = topologyForPreCopy.table_shards.find(
+				s => s.table_name === tableName && s.shard_id === targetShardId
+			);
+			if (targetShard) {
+				const targetStorageId = env.STORAGE.idFromName(targetShard.node_id);
+				const targetStorageStub = env.STORAGE.get(targetStorageId);
+
+				// Get breakdown by virtualShard value to see what was actually copied
+				const breakdown = await targetStorageStub.executeQuery({
+					query: `SELECT _virtualShard, COUNT(*) as count FROM ${tableName} GROUP BY _virtualShard`,
+					params: [],
+					queryType: 'SELECT',
+				});
+				const breakdownMap: { [key: number]: number } = {};
+				for (const row of (breakdown as any).rows) {
+					breakdownMap[row._virtualShard] = row.count;
+				}
+				postCopyVirtualShardBreakdown[targetShardId] = breakdownMap;
+			}
+		}
+		logger.info('Post-copy target shard state', {
+			distribution: copyStats.distribution,
+			postCopyVirtualShardBreakdown
+		});
 
 		// Phase 3C: Replay captured changes
 		const replayStats = await replayChangeLog(
@@ -452,7 +537,6 @@ async function processReshardTableJob(job: ReshardTableJob, env: Env, correlatio
 			job.shard_key,
 			job.shard_strategy
 		);
-		logger.info('Phase 3C: Change log replay completed', { ...replayStats });
 
 		// Phase 3D: Verify data integrity
 		const verifyStats = await verifyIntegrity(
@@ -462,7 +546,25 @@ async function processReshardTableJob(job: ReshardTableJob, env: Env, correlatio
 			targetShardIds,
 			tableName
 		);
-		logger.info('Phase 3D: Data verification completed', { ...verifyStats });
+
+		// Combined comprehensive log showing copy -> replay -> verify progression
+		logger.info('Phase 3: Copy-Replay-Verify Summary', {
+			preCopyTargetState: preCopyTargetCounts,
+			phase3B_copy: {
+				rowsCopied: copyStats.rows_copied,
+				distribution: copyStats.distribution,
+				duration: copyStats.duration,
+			},
+			phase3C_replay: {
+				changesReplayed: replayStats.changes_replayed,
+				duration: replayStats.duration,
+			},
+			phase3D_verify: verifyStats.verificationDetails || {
+				status: verifyStats.isValid ? 'PASSED' : 'FAILED',
+				error: verifyStats.error,
+				duration: verifyStats.duration,
+			},
+		});
 
 		if (!verifyStats.isValid) {
 			throw new Error(`Data verification failed: ${verifyStats.error}`);
@@ -476,15 +578,34 @@ async function processReshardTableJob(job: ReshardTableJob, env: Env, correlatio
 		await deleteOldShardData(env, job.database_id, sourceShardId, tableName);
 		logger.info('Phase 5: Old shard data deleted', { table: tableName, shardId: sourceShardId });
 
-		// Mark resharding as complete
-		await topologyStub.markReshardingComplete(tableName);
+		// CRITICAL: Data verification and copy/delete all passed successfully
+		// Mark resharding as complete before job completion
+		// This should happen BEFORE completeAsyncJob to ensure clean state
+		try {
+			await topologyStub.markReshardingComplete(tableName);
+			logger.info('Resharding marked as complete', { table: tableName });
+		} catch (completeError) {
+			// If we can't mark as complete but data was successfully moved, still mark job as done
+			logger.error('Failed to mark resharding as complete (but data migration succeeded)', {
+				error: completeError instanceof Error ? completeError.message : String(completeError),
+			});
+		}
+
+		// Mark async job as completed
+		try {
+			await topologyStub.completeAsyncJob(jobId);
+			logger.info('Async job marked as complete', { jobId });
+		} catch (jobError) {
+			logger.error('Failed to mark async job as complete (but data migration succeeded)', {
+				jobId,
+				error: jobError instanceof Error ? jobError.message : String(jobError),
+			});
+		}
+
 		logger.info('Resharding completed successfully', {
 			table: tableName,
 			status: 'complete',
 		});
-
-		// Mark async job as completed
-		await topologyStub.completeAsyncJob(jobId);
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		logger.error('Resharding failed', {
@@ -497,29 +618,33 @@ async function processReshardTableJob(job: ReshardTableJob, env: Env, correlatio
 		await topologyStub.markReshardingFailed(tableName, errorMessage);
 
 		// Mark all target shards as 'failed' to clean up pending shards
+		// ONLY do this if we haven't already switched them to active
+		// Check current shard status before marking as failed
 		try {
-			await topologyStub.markTargetShardsAsFailed(tableName, targetShardIds);
-			logger.info('Target shards marked as failed', { table: tableName, targetShardIds });
+			const currentTopology = await topologyStub.getTopology();
+			const targetShardsActive = currentTopology.table_shards.some(
+				s => s.table_name === tableName && targetShardIds.includes(s.shard_id) && s.status === 'active'
+			);
+
+			// Only mark as failed if they're not already active (which means Phase 4 completed)
+			if (!targetShardsActive) {
+				await topologyStub.markTargetShardsAsFailed(tableName, targetShardIds);
+				logger.info('Target shards marked as failed', { table: tableName, targetShardIds });
+			} else {
+				logger.warn('Not marking target shards as failed - they are already active', {
+					table: tableName,
+					targetShardIds,
+				});
+			}
 		} catch (shardError) {
-			logger.warn('Failed to mark target shards as failed', {
+			logger.warn('Failed to handle target shard status', {
 				tableName,
 				targetShardIds,
 				error: shardError instanceof Error ? shardError.message : String(shardError),
 			});
 		}
 
-		// Increment retry counter
-		try {
-			await topologyStub.incrementAsyncJobRetries(jobId);
-			logger.info('Async job retry counter incremented', { jobId });
-		} catch (retryError) {
-			logger.warn('Failed to increment async job retries', {
-				jobId,
-				error: retryError instanceof Error ? retryError.message : String(retryError),
-			});
-		}
-
-		// Mark async job as failed
+		// Mark async job as failed (no retries - fail fast)
 		try {
 			await topologyStub.failAsyncJob(jobId, errorMessage);
 		} catch (jobError) {
@@ -546,7 +671,7 @@ async function copyShardData(
 	tableName: string,
 	shardKey: string,
 	shardStrategy: 'hash' | 'range'
-): Promise<{ rows_copied: number; duration: number }> {
+): Promise<{ rows_copied: number; duration: number; distribution: { [key: number]: number } }> {
 	const startTime = Date.now();
 	let rowsCopied = 0;
 
@@ -646,9 +771,21 @@ async function copyShardData(
 				throw new Error(`Target shard ${targetShardId} node mapping not found`);
 			}
 
-			// Build INSERT OR REPLACE query from row (handles duplicates gracefully)
-			// This is idempotent - replaying the copy is safe if it fails partway through
-			// IMPORTANT: Replace _virtualShard value with target shard ID for proper isolation
+			// Build INSERT OR REPLACE query with proper shard awareness
+			// IMPORTANT: We need to handle multiple scenarios:
+			// 1. Normal case: Row doesn't exist in target, INSERT it with correct _virtualShard
+			// 2. Retry case: Same row with same _virtualShard already exists, REPLACE to update it
+			// 3. Multi-shard case: Multiple source shards might have same ID for different logical rows
+			//
+			// The key insight: Since physical nodes can hold multiple virtual shards,
+			// the source shard row (with _virtualShard = sourceShardId) and target shard row
+			// (with _virtualShard = targetShardId) are DIFFERENT rows even if they have same primary key.
+			// They're distinguished by the combination of (primary_key, _virtualShard).
+			//
+			// However, SQLite PRIMARY KEY doesn't include _virtualShard, so we need to handle
+			// the collision. We use INSERT OR REPLACE to ensure we always have the target shard
+			// version, but the source shard version might get replaced if they're on same node.
+			// This is okay because after resharding completes, the source shard will be deleted anyway.
 			const columns = Object.keys(row).filter(col => col !== '_virtualShard');
 			const allColumns = [...columns, '_virtualShard'];
 			const values = allColumns.map(() => '?');
@@ -680,15 +817,23 @@ async function copyShardData(
 		}
 
 		// Log final distribution
-		let distributionLog = 'Final shard distribution: ';
+		const distributionBreakdown: { [key: number]: number } = {};
 		for (const [shardId, count] of shardDistribution) {
-			distributionLog += `Shard ${shardId}: ${count} rows | `;
+			distributionBreakdown[shardId] = count;
 		}
-		logger.info(distributionLog, { totalRows: rowsCopied, totalShards: targetShardIds.length });
+
+		logger.info('Phase 3B: Final copy distribution', {
+			totalRows: rowsCopied,
+			totalShards: targetShardIds.length,
+			distribution: distributionBreakdown,
+			sourceRowsRead: rows.length,
+			sourceCountQuery: sourceCount,
+			match: rows.length === sourceCount,
+		});
 
 		const duration = Date.now() - startTime;
 		logger.info('Phase 3B: Data copy completed', { rowsCopied, duration });
-		return { rows_copied: rowsCopied, duration };
+		return { rows_copied: rowsCopied, duration, distribution: distributionBreakdown };
 	} catch (error) {
 		logger.error('Phase 3B: Data copy failed', {
 			error: error instanceof Error ? error.message : String(error),
@@ -743,7 +888,7 @@ async function verifyIntegrity(
 	sourceShardId: number,
 	targetShardIds: number[],
 	tableName: string
-): Promise<{ isValid: boolean; error?: string; duration: number }> {
+): Promise<{ isValid: boolean; error?: string; duration: number; verificationDetails?: any }> {
 	const startTime = Date.now();
 
 	logger.info('Phase 3D: Starting data verification', {
@@ -813,30 +958,43 @@ async function verifyIntegrity(
 
 		const duration = Date.now() - startTime;
 
-		// Log detailed breakdown
-		logger.info('Phase 3D: Verification breakdown', {
-			sourceCount,
-			targetTotalCount,
-			difference: targetTotalCount - sourceCount,
-			targetBreakdown,
-			sourceShardId,
-			targetShardIds,
+		// Single comprehensive verification log
+		const isValid = sourceCount === targetTotalCount;
+		const difference = targetTotalCount - sourceCount;
+		const differencePercent = ((difference / Math.max(sourceCount, 1)) * 100).toFixed(2);
+
+		const verificationStatus = isValid ? 'PASSED' : 'FAILED';
+		const verificationSummary = {
+			status: verificationStatus,
 			duration,
-		});
-
-		if (sourceCount !== targetTotalCount) {
-			const error = `Row count mismatch: source=${sourceCount}, targets=${targetTotalCount}`;
-			logger.warn('Phase 3D: Data verification failed', {
-				error,
-				duration,
+			source: {
+				shardId: sourceShardId,
+				rowCount: sourceCount,
+			},
+			targets: {
+				shardIds: targetShardIds,
+				totalRowCount: targetTotalCount,
 				breakdown: targetBreakdown,
-				difference: targetTotalCount - sourceCount,
-			});
-			return { isValid: false, error, duration };
-		}
+				breakdown_details: targetShardIds.map(shardId => ({
+					shardId,
+					rowCount: targetBreakdown[shardId] || 0,
+				})),
+			},
+			comparison: {
+				match: isValid,
+				difference: difference,
+				differencePercent: `${differencePercent}%`,
+				expectedSourceCount: sourceCount,
+				actualTargetCount: targetTotalCount,
+			},
+		};
 
-		logger.info('Phase 3D: Data verification passed', { rowCount: sourceCount, duration });
-		return { isValid: true, duration };
+		if (isValid) {
+			return { isValid: true, duration, verificationDetails: verificationSummary };
+		} else {
+			const error = `Row count mismatch: expected ${sourceCount} rows, got ${targetTotalCount} rows (difference: ${difference})`;
+			return { isValid: false, error, duration, verificationDetails: verificationSummary };
+		}
 	} catch (error) {
 		logger.error('Phase 3D: Data verification error', {
 			error: error instanceof Error ? error.message : String(error),

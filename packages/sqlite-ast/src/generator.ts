@@ -8,6 +8,7 @@ import type {
   AlterTableStatement,
   CreateIndexStatement,
   PragmaStatement,
+  DropTableStatement,
   Expression,
   Identifier,
   Literal,
@@ -46,6 +47,8 @@ export function generate(ast: Statement): string {
       return generateCreateIndex(ast);
     case "PragmaStatement":
       return generatePragma(ast);
+    case "DropTableStatement":
+      return generateDropTable(ast);
     default:
       throw new Error(`Unknown statement type: ${(ast as any).type}`);
   }
@@ -234,6 +237,18 @@ function generateCreateIndex(stmt: CreateIndexStatement): string {
   sql += " " + generateIdentifier(stmt.name);
   sql += " ON " + generateIdentifier(stmt.table);
   sql += " (" + stmt.columns.map(generateIdentifier).join(", ") + ")";
+
+  return sql;
+}
+
+function generateDropTable(stmt: DropTableStatement): string {
+  let sql = "DROP TABLE";
+
+  if (stmt.ifExists) {
+    sql += " IF EXISTS";
+  }
+
+  sql += " " + generateIdentifier(stmt.table);
 
   return sql;
 }

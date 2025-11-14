@@ -8,6 +8,7 @@ import type {
 	InsertStatement,
 	UpdateStatement,
 	DeleteStatement,
+	DropTableStatement,
 } from '@databases/sqlite-ast';
 import type { QueryType } from '../storage';
 
@@ -15,18 +16,13 @@ import type { QueryType } from '../storage';
  * Extract the table name from a parsed SQL statement
  */
 export function extractTableName(statement: Statement): string | null {
-	switch (statement.type) {
-		case 'SelectStatement':
-			return (statement as SelectStatement).from?.name || null;
-		case 'InsertStatement':
-			return (statement as InsertStatement).table.name;
-		case 'UpdateStatement':
-			return (statement as UpdateStatement).table.name;
-		case 'DeleteStatement':
-			return (statement as DeleteStatement).table.name;
-		default:
-			return null;
+	if ('from' in statement && statement.from) {
+		return statement.from.name;
 	}
+	if ('table' in statement && statement.table) {
+		return statement.table.name;
+	}
+	return null;
 }
 
 /**
@@ -81,6 +77,8 @@ export function getQueryType(statement: Statement): QueryType {
 			return 'ALTER';
 		case 'CreateIndexStatement':
 			return 'CREATE';
+		case 'DropTableStatement':
+			return 'DROP';
 		default:
 			return 'UNKNOWN';
 	}

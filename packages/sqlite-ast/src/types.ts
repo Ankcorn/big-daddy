@@ -178,6 +178,12 @@ export interface PragmaStatement extends BaseNode {
   value?: Expression
 }
 
+export interface DropTableStatement extends BaseNode {
+  type: 'DropTableStatement'
+  table: Identifier
+  ifExists?: boolean
+}
+
 export type Statement =
   | SelectStatement
   | InsertStatement
@@ -187,6 +193,7 @@ export type Statement =
   | AlterTableStatement
   | CreateIndexStatement
   | PragmaStatement
+  | DropTableStatement
 
 export interface Program extends BaseNode {
   type: 'Program'

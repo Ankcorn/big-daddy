@@ -471,41 +471,57 @@ export class ConductorClient {
 			throw new Error(`Table '${tableName}' not found in topology`);
 		}
 
-		// Phase 2: Enqueue ReshardTableJob for async processing
-		const jobId = crypto.randomUUID();
-		const sourceShardId = topology.table_shards
+		// Phase 2: Enqueue ReshardTableJob for each active source shard
+		// When resharding from multiple shards to a different number, we need to handle each source shard
+		const sourceShardIds = topology.table_shards
 			.filter((s) => s.table_name === tableName && s.status === 'active')
-			.sort((a, b) => a.shard_id - b.shard_id)[0]?.shard_id ?? 0;
+			.sort((a, b) => a.shard_id - b.shard_id)
+			.map((s) => s.shard_id);
 
-		await this.enqueueIndexJob({
-			type: 'reshard_table',
-			database_id: this.databaseId,
-			table_name: tableName,
-			source_shard_id: sourceShardId,
-			target_shard_ids: newShards.map((s) => s.shard_id),
-			shard_key: tableMetadata.shard_key,
-			shard_strategy: tableMetadata.shard_strategy,
-			change_log_id: changeLogId,
-			created_at: new Date().toISOString(),
-			correlation_id: cid,
-		} as ReshardTableJob);
+		if (sourceShardIds.length === 0) {
+			throw new Error(`No active shards found for table '${tableName}'`);
+		}
 
-		logger.info('Resharding job enqueued', {
+		// Enqueue a resharding job for each source shard
+		for (const sourceShardId of sourceShardIds) {
+			const jobId = crypto.randomUUID();
+
+			await this.enqueueIndexJob({
+				type: 'reshard_table',
+				database_id: this.databaseId,
+				table_name: tableName,
+				source_shard_id: sourceShardId,
+				target_shard_ids: newShards.map((s) => s.shard_id),
+				shard_key: tableMetadata.shard_key,
+				shard_strategy: tableMetadata.shard_strategy,
+				change_log_id: changeLogId,
+				created_at: new Date().toISOString(),
+				correlation_id: cid,
+			} as ReshardTableJob);
+
+			logger.info('Resharding job enqueued for source shard', {
+				table: tableName,
+				jobId,
+				sourceShardId,
+				targetShardIds: newShards.map((s) => s.shard_id),
+			});
+		}
+
+		logger.info('All resharding jobs enqueued', {
 			table: tableName,
-			jobId,
-			sourceShardId,
-			targetShardIds: newShards.map((s) => s.shard_id),
+			sourceShardCount: sourceShardIds.length,
+			targetShardCount: newShards.length,
 		});
 
 		return {
 			rows: [
 				{
-					job_id: jobId,
-					status: 'queued',
-					message: `Resharding ${tableName} to ${shardCount} shards`,
 					change_log_id: changeLogId,
+					status: 'queued',
+					message: `Resharding ${tableName} from ${sourceShardIds.length} shards to ${shardCount} shards`,
 					table_name: tableName,
-					shard_count: shardCount,
+					source_shard_count: sourceShardIds.length,
+					target_shard_count: shardCount,
 				},
 			],
 		};

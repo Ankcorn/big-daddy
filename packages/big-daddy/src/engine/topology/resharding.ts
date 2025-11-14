@@ -16,7 +16,7 @@ import type { Topology } from './index';
 import type { TableShard, ReshardingState } from './types';
 
 export class ReshardingOperations {
-	constructor(private storage: any) {}
+	constructor(private storage: any, private env?: Env) {}
 
 	/**
 	 * Create pending shards for resharding operation
@@ -229,12 +229,12 @@ export class ReshardingOperations {
 	 * @returns Success status
 	 */
 	async deleteVirtualShard(tableName: string, shardId: number): Promise<{ success: boolean; error?: string }> {
-		// Get the shard to check its status
+		// Get the shard to check its status and node location
 		const shards = this.storage.sql.exec(
-			`SELECT status FROM table_shards WHERE table_name = ? AND shard_id = ?`,
+			`SELECT status, node_id FROM table_shards WHERE table_name = ? AND shard_id = ?`,
 			tableName,
 			shardId
-		).toArray() as unknown as { status: string }[];
+		).toArray() as unknown as { status: string; node_id: string }[];
 
 		if (shards.length === 0) {
 			return { success: false, error: `Shard ${shardId} not found for table '${tableName}'` };
@@ -251,7 +251,32 @@ export class ReshardingOperations {
 			);
 		}
 
-		// Delete the shard
+		// Delete shard data from physical storage
+		if (this.env) {
+			try {
+				const storageId = this.env.STORAGE.idFromName(shard.node_id);
+				const storageStub = this.env.STORAGE.get(storageId);
+
+				// Delete all rows for this shard from the table
+				await storageStub.executeQuery({
+					query: `DELETE FROM ${tableName} WHERE _virtualShard = ?`,
+					params: [shardId],
+					queryType: 'DELETE',
+				});
+
+				logger.info('Virtual shard data deleted from storage', { tableName, shardId, nodeId: shard.node_id });
+			} catch (error) {
+				logger.error('Failed to delete virtual shard data from storage', {
+					tableName,
+					shardId,
+					nodeId: shard.node_id,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				// Continue to delete from topology even if storage deletion fails
+			}
+		}
+
+		// Delete the shard metadata from topology
 		this.storage.sql.exec(
 			`DELETE FROM table_shards WHERE table_name = ? AND shard_id = ?`,
 			tableName,

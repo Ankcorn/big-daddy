@@ -194,19 +194,33 @@ describe('E2E Resharding: Insert via Conductor + Verify', () => {
 		console.log('Resharding to 3 shards...');
 		await sql`PRAGMA reshardTable('users', 3)`;
 
-		// Check that resharding job was initiated (resharding is async, so job may still be in-flight)
+		// Verify resharding job completed successfully
 		const topologyId = env.TOPOLOGY.idFromName(dbId);
 		const topologyStub = env.TOPOLOGY.get(topologyId);
-		const topologyAfter = await topologyStub.getTopology();
 
-		// Verify we now have pending/active shards for 1→3 resharding (original + 3 new ones)
+		// Wait for resharding to complete (poll with timeout)
+		let reshardingState = await topologyStub.getReshardingState('users');
+		let attempts = 0;
+		const maxAttempts = 50; // ~5 seconds with 100ms delays
+		while (reshardingState?.status !== 'complete' && reshardingState?.status !== 'failed' && attempts < maxAttempts) {
+			await new Promise(resolve => setTimeout(resolve, 100));
+			reshardingState = await topologyStub.getReshardingState('users');
+			attempts++;
+		}
+
+		console.log(`Resharding job status: ${reshardingState?.status}`);
+		expect(reshardingState?.status).toBe('complete');
+		expect(reshardingState?.error_message).toBeNull();
+
+		// Verify topology shows new shards
+		const topologyAfter = await topologyStub.getTopology();
 		const userShards = topologyAfter.table_shards.filter(s => s.table_name === 'users');
 		console.log(`Shard count after resharding: ${userShards.length}`);
 		expect(userShards.length).toBeGreaterThanOrEqual(4); // Original 1 + new 3
 
-		// Verify the new shards were created (status may be pending or active depending on timing)
-		const newShards = userShards.filter(s => s.shard_id > 0);
-		console.log(`New shards created: ${newShards.length}`);
+		// Verify the new shards were created and are active
+		const newShards = userShards.filter(s => s.shard_id > 0 && s.status === 'active');
+		console.log(`New active shards: ${newShards.length}`);
 		expect(newShards.length).toBeGreaterThanOrEqual(3);
 
 		// Test WHERE after resharding - CRITICAL TEST

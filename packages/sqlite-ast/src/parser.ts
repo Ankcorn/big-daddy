@@ -8,6 +8,7 @@ import type {
   AlterTableStatement,
   CreateIndexStatement,
   PragmaStatement,
+  DropTableStatement,
   ColumnDefinition,
   ColumnConstraint,
   Statement,
@@ -114,6 +115,10 @@ class Parser {
 
     if (this.match("ALTER")) {
       return this.parseAlter();
+    }
+
+    if (this.match("DROP")) {
+      return this.parseDrop();
     }
 
     if (this.match("PRAGMA")) {
@@ -499,6 +504,36 @@ class Parser {
     }
 
     throw new ParserError("Expected ADD, RENAME, or DROP in ALTER TABLE");
+  }
+
+  private parseDrop(): Statement {
+    this.expect("DROP", "keyword");
+
+    if (this.match("TABLE")) {
+      return this.parseDropTable();
+    }
+
+    throw new ParserError("Only DROP TABLE is supported");
+  }
+
+  private parseDropTable(): DropTableStatement {
+    this.expect("TABLE", "keyword");
+
+    // Check for IF EXISTS clause
+    let ifExists: boolean | undefined;
+    if (this.match("IF")) {
+      this.advance();
+      this.expect("EXISTS", "keyword");
+      ifExists = true;
+    }
+
+    const table = this.parseIdentifier();
+
+    return {
+      type: "DropTableStatement",
+      table,
+      ...(ifExists ? { ifExists } : {})
+    };
   }
 
   private parsePragma(): PragmaStatement {
