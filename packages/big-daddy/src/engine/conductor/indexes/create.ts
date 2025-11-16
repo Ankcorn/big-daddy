@@ -99,10 +99,7 @@ async function enqueueIndexJob(context: QueryHandlerContext, job: IndexJob): Pro
  * 4. Enqueues an IndexBuildJob to the queue for async processing (builds virtual index metadata)
  * 5. Returns immediately to the client (non-blocking)
  */
-export async function handleCreateIndex(
-	statement: CreateIndexStatement,
-	context: QueryHandlerContext,
-): Promise<QueryResult> {
+export async function handleCreateIndex(statement: CreateIndexStatement, context: QueryHandlerContext): Promise<QueryResult> {
 	const indexName = statement.name.name;
 	const tableName = statement.table.name;
 
@@ -134,7 +131,6 @@ export async function handleCreateIndex(
 				await storageStub.executeQuery({
 					query: createIndexSQL,
 					params: [],
-					queryType: 'CREATE',
 				});
 			} catch (error) {
 				// If IF NOT EXISTS is specified, ignore "already exists" errors

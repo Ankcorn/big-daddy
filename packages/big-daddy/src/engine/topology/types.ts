@@ -122,5 +122,5 @@ export interface TopologyUpdates {
 
 export interface QueryPlanData {
 	shardsToQuery: Array<{ table_name: string; shard_id: number; node_id: string }>;
-	virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>;
+	virtualIndexes: Array<{ table_name: string; index_name: string; columns: string; index_type: 'hash' | 'unique' }>;
 }

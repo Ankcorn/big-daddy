@@ -1,79 +1,326 @@
 import type { SelectStatement, InsertStatement, UpdateStatement, DeleteStatement } from '@databases/sqlite-ast';
+import { generate } from '@databases/sqlite-ast';
+import { Effect, Data } from 'effect';
 import { logger } from '../../../logger';
 import type { QueryResult, ShardStats, QueryHandlerContext, ShardInfo } from '../types';
 import type { IndexMaintenanceJob, IndexJob } from '../../queue/types';
-import { injectVirtualShardFilter } from './helpers';
+import { injectVirtualShard } from './helpers';
+import { extractKeyValueFromRow } from './utils';
+import type { QueryPlanData } from '../../topology';
+
 /**
- * Execute a query (SELECT/INSERT/UPDATE/DELETE) on shards in parallel batches
+ * Error type for shard query execution failures
+ */
+class ShardQueryExecutionError extends Data.TaggedError('ShardQueryExecutionError')<{
+	readonly shardId: number;
+	readonly nodeId: string;
+	readonly statementType: string;
+	readonly originalError: Error;
+}> {}
+
+/**
+ * Prepared queries for a single shard
+ */
+interface ShardQueries {
+	shard: ShardInfo;
+	queries: Array<{ query: string; params: any[] }>;
+}
+
+/**
+ * Result from executing queries on a shard
+ */
+interface ShardExecutionResult {
+	shard: ShardInfo;
+	results: QueryResult | QueryResult[];
+	stats: ShardStats;
+	startTime: number;
+}
+
+/**
+ * Prepare queries for a shard by injecting virtual shard filters
+ * This is a pure function that transforms statements into executable queries
+ */
+function prepareShardQueries(
+	shard: ShardInfo,
+	statements: (SelectStatement | InsertStatement | UpdateStatement | DeleteStatement)[],
+	params: any[],
+): ShardQueries {
+	const queries = statements.map((stmt) => {
+		const { modifiedStatement, modifiedParams } = injectVirtualShard(stmt, params, shard.shard_id);
+		return {
+			query: generate(modifiedStatement),
+			params: modifiedParams,
+		};
+	});
+
+	return { shard, queries };
+}
+
+/**
+ * Transform raw storage results into structured QueryResults
+ * Pure function for data transformation
+ */
+function transformStorageResults(rawResults: any, isMultipleStatements: boolean): QueryResult[] {
+	const rawResultsArray = isMultipleStatements ? (rawResults as any).results || rawResults : [rawResults];
+
+	return rawResultsArray.map((result: any) => ({
+		rows: result.rows || [],
+		rowsAffected: result.rowsAffected ?? 0,
+	}));
+}
+
+/**
+ * Execute prepared queries on a single shard
+ * Returns an Effect that handles the async storage call
+ */
+function executeSingleShardQueries(
+	context: QueryHandlerContext,
+	shardQueries: ShardQueries,
+	isMultipleStatements: boolean,
+	statementType: string,
+): Effect.Effect<ShardExecutionResult, ShardQueryExecutionError> {
+	const { storage } = context;
+	const { shard, queries } = shardQueries;
+	const shardStartTime = Date.now();
+	const storageId = storage.idFromName(shard.node_id);
+	const storageStub = storage.get(storageId);
+
+	// Wrap the async call and transform results
+	const executeQuery: Effect.Effect<any, ShardQueryExecutionError> = Effect.promise(
+		() => storageStub.executeQuery(isMultipleStatements ? queries : queries[0]!) as any,
+	).pipe(
+		Effect.mapError(
+			(error: unknown) =>
+				new ShardQueryExecutionError({
+					shardId: shard.shard_id,
+					nodeId: shard.node_id,
+					statementType,
+					originalError: error instanceof Error ? error : new Error(String(error)),
+				}),
+		),
+	);
+
+	return executeQuery.pipe(
+		Effect.andThen((rawResults) => {
+			const statementResults = transformStorageResults(rawResults, isMultipleStatements);
+			const shardDuration = Date.now() - shardStartTime;
+
+			// Use stats from the last statement (typically the write operation)
+			const lastResult = statementResults[statementResults.length - 1];
+			const stats: ShardStats = {
+				shardId: shard.shard_id,
+				nodeId: shard.node_id,
+				rowsReturned: lastResult?.rows?.length ?? 0,
+				rowsAffected: lastResult?.rowsAffected ?? 0,
+				duration: shardDuration,
+			};
+
+			const result: ShardExecutionResult = {
+				shard,
+				results: isMultipleStatements ? statementResults : statementResults[0]!,
+				stats,
+				startTime: shardStartTime,
+			};
+
+			return Effect.succeed(result);
+		}),
+		Effect.tapError(() => {
+			logger.error(`${statementType} shard query failed`, {
+				shardId: shard.shard_id,
+			});
+			return Effect.void;
+		}),
+	);
+}
+
+/**
+ * Execute query/queries (SELECT/INSERT/UPDATE/DELETE) on shards in parallel batches
+ * This function uses Effect for composing async operations with proper error handling
  *
- * This method:
+ * Type-safe overloads:
+ * - Single statement: results is QueryResult[]
+ * - Two statements: results is [QueryResult[], QueryResult[]]
+ * - Three statements: results is [QueryResult[], QueryResult[], QueryResult[]]
+ *
+ * Implementation details:
  * 1. Processes shards in batches of 7 to avoid overwhelming the system
  * 2. Injects _virtualShard filter for shard-specific isolation
- * 3. Tracks execution statistics for each shard
- * 4. Returns merged results and shard performance data
+ * 3. Executes all statements in sequence per shard
+ * 4. Tracks execution statistics for each shard
+ * 5. Returns merged results and shard performance data
  */
+
+// Overload 1: Single statement
+function executeOnShardsEffect(
+	context: QueryHandlerContext,
+	shardsToQuery: ShardInfo[],
+	statement: SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
+	params: any[],
+): Effect.Effect<{ results: QueryResult[]; shardStats: ShardStats[] }, ShardQueryExecutionError>;
+
+// Overload 2: Two statements
+function executeOnShardsEffect(
+	context: QueryHandlerContext,
+	shardsToQuery: ShardInfo[],
+	statement: readonly [
+		SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
+		SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
+	],
+	params: any[],
+): Effect.Effect<{ results: [QueryResult[], QueryResult[]]; shardStats: ShardStats[] }, ShardQueryExecutionError>;
+
+// Overload 3: Three statements
+function executeOnShardsEffect(
+	context: QueryHandlerContext,
+	shardsToQuery: ShardInfo[],
+	statement: readonly [
+		SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
+		SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
+		SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
+	],
+	params: any[],
+): Effect.Effect<
+	{ results: [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] },
+	ShardQueryExecutionError
+>;
+
+// Overload 4: General array (for internal use with flexible length)
+function executeOnShardsEffect(
+	context: QueryHandlerContext,
+	shardsToQuery: ShardInfo[],
+	statement: readonly (SelectStatement | InsertStatement | UpdateStatement | DeleteStatement)[],
+	params: any[],
+): Effect.Effect<
+	{ results: QueryResult[] | QueryResult[][] | [QueryResult[], QueryResult[]] | [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] },
+	ShardQueryExecutionError
+>;
+
+// Implementation
+function executeOnShardsEffect(
+	context: QueryHandlerContext,
+	shardsToQuery: ShardInfo[],
+	statement:
+		| SelectStatement
+		| InsertStatement
+		| UpdateStatement
+		| DeleteStatement
+		| readonly (SelectStatement | InsertStatement | UpdateStatement | DeleteStatement)[],
+	params: any[],
+): Effect.Effect<
+	{ results: QueryResult[] | QueryResult[][] | [QueryResult[], QueryResult[]] | [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] },
+	ShardQueryExecutionError
+> {
+	const BATCH_SIZE = 7;
+
+	// Detect if we're doing single or batch query execution
+	const isMultipleStatements = Array.isArray(statement);
+	const statements = isMultipleStatements ? statement : [statement];
+	const statementType = statements[0]!.type;
+
+	// Prepare queries for all shards (pure transformation)
+	const allPreparedQueries = shardsToQuery.map((shard) => prepareShardQueries(shard, statements, params));
+
+	// Split into batches
+	const batches = Array.from({ length: Math.ceil(allPreparedQueries.length / BATCH_SIZE) }, (_, i) =>
+		allPreparedQueries.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE),
+	);
+
+	// Execute all batches sequentially using Effect
+	return Effect.gen(function* () {
+		const allResults: (QueryResult | QueryResult[])[] = [];
+		const allShardStats: ShardStats[] = [];
+
+		// Process each batch sequentially
+		for (const batch of batches) {
+			// Execute all shards in a batch in parallel
+			const batchResults = yield* Effect.all(
+				batch.map((shardQueries) => executeSingleShardQueries(context, shardQueries, isMultipleStatements, statementType)),
+				// Use concurrency mode for parallel execution within batch
+				{ concurrency: 'unbounded' },
+			);
+
+			// Collect results from this batch
+			for (const result of batchResults) {
+				allResults.push(result.results);
+				allShardStats.push(result.stats);
+			}
+		}
+
+		// Return the final aggregated results
+		return {
+			results: isMultipleStatements ? (allResults as [QueryResult, QueryResult]) : (allResults as QueryResult[]),
+			shardStats: allShardStats,
+		};
+	}).pipe(
+		// Log any errors
+		Effect.catchTag('ShardQueryExecutionError', (error) => Effect.fail(error)),
+	);
+}
+
+/**
+ * Backward-compatible wrapper for executeOnShardsEffect
+ * Executes the Effect and returns a Promise for compatibility with existing code
+ *
+ * Type-safe overloads:
+ * - Single statement: results is QueryResult[]
+ * - Two statements: results is [QueryResult[], QueryResult[]]
+ * - Three statements: results is [QueryResult[], QueryResult[], QueryResult[]]
+ */
+
+// Overload 1: Single statement
 export async function executeOnShards(
 	context: QueryHandlerContext,
 	shardsToQuery: ShardInfo[],
 	statement: SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
 	params: any[],
-): Promise<{ results: QueryResult[]; shardStats: ShardStats[] }> {
-	const { storage } = context;
-	const BATCH_SIZE = 7;
-	const allResults: QueryResult[] = [];
-	const allShardStats: ShardStats[] = [];
+): Promise<{ results: QueryResult[]; shardStats: ShardStats[] }>;
 
-	// Process shards in batches of 7
-	for (let i = 0; i < shardsToQuery.length; i += BATCH_SIZE) {
-		const batch = shardsToQuery.slice(i, i + BATCH_SIZE);
-		const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+// Overload 2: Two statements
+export async function executeOnShards(
+	context: QueryHandlerContext,
+	shardsToQuery: ShardInfo[],
+	statement: readonly [
+		SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
+		SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
+	],
+	params: any[],
+): Promise<{ results: [QueryResult[], QueryResult[]]; shardStats: ShardStats[] }>;
 
-		const batchResults = await Promise.all(
-			batch.map(async (shard) => {
-				const shardStartTime = Date.now();
-				const storageId = storage.idFromName(shard.node_id);
-				const storageStub = storage.get(storageId);
+// Overload 3: Three statements
+export async function executeOnShards(
+	context: QueryHandlerContext,
+	shardsToQuery: ShardInfo[],
+	statement: readonly [
+		SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
+		SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
+		SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
+	],
+	params: any[],
+): Promise<{ results: [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] }>;
 
-				try {
-					// Clone the statement to avoid mutations when processing multiple shards
-					const statementClone = JSON.parse(JSON.stringify(statement));
-					const { modifiedQuery, modifiedParams } = injectVirtualShardFilter(statementClone, params, shard.shard_id);
+// Overload 4: General array (catch-all for other cases)
+export async function executeOnShards(
+	context: QueryHandlerContext,
+	shardsToQuery: ShardInfo[],
+	statement: readonly (SelectStatement | InsertStatement | UpdateStatement | DeleteStatement)[],
+	params: any[],
+): Promise<{ results: QueryResult[] | QueryResult[][] | [QueryResult[], QueryResult[]] | [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] }>;
 
-					const rawResult = (await storageStub.executeQuery({
-						query: modifiedQuery,
-						params: modifiedParams,
-					})) as any;
-
-					const shardDuration = Date.now() - shardStartTime;
-
-					const shardStat: ShardStats = {
-						shardId: shard.shard_id,
-						nodeId: shard.node_id,
-						rowsReturned: rawResult.rows.length,
-						rowsAffected: rawResult.rowsAffected ?? 0,
-						duration: shardDuration,
-					};
-
-					allShardStats.push(shardStat);
-
-					return {
-						rows: rawResult.rows,
-						rowsAffected: rawResult.rowsAffected ?? 0,
-					};
-				} catch (error) {
-					logger.error(`${statement.type} shard query failed`, {
-						shardId: shard.shard_id,
-						error: error instanceof Error ? error.message : String(error),
-					});
-					throw error;
-				}
-			}),
-		);
-
-		allResults.push(...batchResults);
-	}
-
-	return { results: allResults, shardStats: allShardStats };
+// Implementation
+export async function executeOnShards(
+	context: QueryHandlerContext,
+	shardsToQuery: ShardInfo[],
+	statement:
+		| SelectStatement
+		| InsertStatement
+		| UpdateStatement
+		| DeleteStatement
+		| readonly (SelectStatement | InsertStatement | UpdateStatement | DeleteStatement)[],
+	params: any[],
+): Promise<{ results: QueryResult[] | QueryResult[][] | [QueryResult[], QueryResult[]] | [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] }> {
+	// Call executeOnShardsEffect with explicit type casting to resolve overload
+	const effect = executeOnShardsEffect(context, shardsToQuery, statement as any, params);
+	return Effect.runPromise(effect);
 }
 
 /**
@@ -228,8 +475,6 @@ function invalidateIndexCacheForInsert(
 		return;
 	}
 
-	const { extractKeyValueFromRow } = require('./utils');
-
 	const columns = statement.columns;
 	const row = statement.values[0]; // Only handle single-row inserts for now
 
@@ -295,7 +540,7 @@ export async function getCachedQueryPlanData(
 	tableName: string,
 	statement: any,
 	params: any[],
-): Promise<{ planData: any; cacheHit: boolean }> {
+): Promise<{ planData: QueryPlanData; cacheHit: boolean }> {
 	const { topology, databaseId, cache, correlationId } = context;
 
 	// Try to build a cache key for this query

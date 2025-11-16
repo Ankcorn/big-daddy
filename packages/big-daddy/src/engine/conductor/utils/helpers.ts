@@ -8,61 +8,62 @@ import type {
 	ColumnDefinition,
 	TableConstraint,
 	Statement,
+	InsertStatement,
+	Identifier,
+	Expression,
+	Literal,
+	Placeholder,
 } from '@databases/sqlite-ast';
 import type { QueryResult, ShardStats } from '../types';
 import { logger } from '../../../logger';
 
-/**
- * Inject _virtualShard filter into a query for a specific shard
- *
- * Takes a pre-parsed statement and injects _virtualShard WHERE clause filtering
- * for SELECT/UPDATE/DELETE queries. Avoids redundant AST parsing.
- *
- * @param statement - The parsed SQL statement (SELECT/UPDATE/DELETE)
- * @param params - Original query parameters
- * @param shardId - The virtual shard ID to filter by
- * @returns Modified query and params with _virtualShard filter injected
- */
-export function injectVirtualShardFilter(
-	statement: Statement,
+export function injectVirtualShard(
+	statement: UpdateStatement | InsertStatement | DeleteStatement | SelectStatement,
 	params: any[],
 	shardId: number,
-): { modifiedQuery: string; modifiedParams: any[] } {
-	// For INSERT, storage nodes handle _virtualShard injection, no filtering needed here
-	if (statement.type === 'InsertStatement') {
-		const modifiedQuery = generate(statement);
-		return { modifiedQuery, modifiedParams: params };
-	}
-
+): { modifiedStatement: Statement; modifiedParams: any[] } {
 	try {
-		let modifiedStatement = statement;
-
-		if (statement.type === 'SelectStatement') {
-			modifiedStatement = injectWhereFilterToSelect(statement, shardId, params);
-		} else if (statement.type === 'UpdateStatement') {
-			modifiedStatement = injectWhereFilterToUpdate(statement, shardId, params);
-		} else if (statement.type === 'DeleteStatement') {
-			modifiedStatement = injectWhereFilterToDelete(statement, shardId, params);
+		if (statement.type === 'InsertStatement') {
+			// For INSERT, append shardId to params and pass both the modified statement and params
+			return { modifiedStatement: insertColumn(statement, params), modifiedParams: [...params, shardId] };
 		}
-
-		const modifiedQuery = generate(modifiedStatement);
 		const modifiedParams = [...params, shardId];
+		const modifiedStatement = injectWhereFilter(statement, params);
 
-		return { modifiedQuery, modifiedParams };
+		return { modifiedStatement: modifiedStatement || statement, modifiedParams };
 	} catch (error) {
 		logger.warn('Failed to inject _virtualShard filter, using original statement', {
 			error: error instanceof Error ? error.message : String(error),
 		});
-		// Fallback: generate from original statement
-		const modifiedQuery = generate(statement);
-		return { modifiedQuery, modifiedParams: params };
+		return { modifiedStatement: statement, modifiedParams: params };
 	}
+}
+
+/**
+ *
+ * Inject virtual shard column on insert
+ */
+function insertColumn(stmt: InsertStatement, params: any[]): InsertStatement {
+	const virtualShardIdentifier: Identifier = {
+		type: 'Identifier',
+		name: '_virtualShard',
+	};
+	const virtualShardValue: Placeholder = { type: 'Placeholder', parameterIndex: params.length };
+
+	return {
+		...stmt,
+		columns: stmt.columns ? [...stmt.columns, virtualShardIdentifier] : [virtualShardIdentifier],
+		values: stmt.values ? stmt.values.map((values) => [...values, virtualShardValue]) : [[virtualShardValue]],
+	};
 }
 
 /**
  * Inject _virtualShard filter into a SELECT statement using AST manipulation
  */
-function injectWhereFilterToSelect(stmt: SelectStatement, shardId: number, params: any[]): SelectStatement {
+function injectWhereFilter<TStatement extends DeleteStatement | SelectStatement | UpdateStatement>(
+	stmt: TStatement,
+	params: any[],
+): TStatement {
 	const virtualShardFilter: BinaryExpression = {
 		type: 'BinaryExpression',
 		operator: '=',
@@ -77,85 +78,21 @@ function injectWhereFilterToSelect(stmt: SelectStatement, shardId: number, param
 	};
 
 	if (stmt.where) {
-		// AND existing WHERE with new filter, put _virtualShard on the right to avoid parameter reordering
-		stmt.where = {
-			type: 'BinaryExpression',
-			operator: 'AND',
-			left: stmt.where,
-			right: virtualShardFilter,
+		return {
+			...stmt,
+			where: {
+				type: 'BinaryExpression',
+				operator: 'AND',
+				left: stmt.where,
+				right: virtualShardFilter,
+			},
 		};
-	} else {
-		// No WHERE clause, just add the filter
-		stmt.where = virtualShardFilter;
 	}
 
-	return stmt;
-}
-
-/**
- * Inject _virtualShard filter into an UPDATE statement using AST manipulation
- */
-function injectWhereFilterToUpdate(stmt: UpdateStatement, shardId: number, params: any[]): UpdateStatement {
-	const virtualShardFilter: BinaryExpression = {
-		type: 'BinaryExpression',
-		operator: '=',
-		left: {
-			type: 'Identifier',
-			name: '_virtualShard',
-		},
-		right: {
-			type: 'Placeholder',
-			parameterIndex: params.length,
-		},
+	return {
+		...stmt,
+		where: virtualShardFilter,
 	};
-
-	if (stmt.where) {
-		// AND existing WHERE with new filter, put _virtualShard on the right to preserve parameter order
-		stmt.where = {
-			type: 'BinaryExpression',
-			operator: 'AND',
-			left: stmt.where,
-			right: virtualShardFilter,
-		};
-	} else {
-		// No WHERE clause, just add the filter
-		stmt.where = virtualShardFilter;
-	}
-
-	return stmt;
-}
-
-/**
- * Inject _virtualShard filter into a DELETE statement using AST manipulation
- */
-function injectWhereFilterToDelete(stmt: DeleteStatement, shardId: number, params: any[]): DeleteStatement {
-	const virtualShardFilter: BinaryExpression = {
-		type: 'BinaryExpression',
-		operator: '=',
-		left: {
-			type: 'Identifier',
-			name: '_virtualShard',
-		},
-		right: {
-			type: 'Placeholder',
-			parameterIndex: params.length,
-		},
-	};
-
-	if (stmt.where) {
-		// AND existing WHERE with new filter, put _virtualShard on the right to preserve parameter order
-		stmt.where = {
-			type: 'BinaryExpression',
-			operator: 'AND',
-			left: stmt.where,
-			right: virtualShardFilter,
-		};
-	} else {
-		// No WHERE clause, just add the filter
-		stmt.where = virtualShardFilter;
-	}
-
-	return stmt;
 }
 
 /**
@@ -207,7 +144,7 @@ export function injectVirtualShardColumn(statement: CreateTableStatement): strin
 		}
 	}
 
-	// Add _virtualShard column at the beginning
+	// Add _virtualShard column at the end
 	const virtualShardColumn: ColumnDefinition = {
 		type: 'ColumnDefinition',
 		name: {
@@ -232,15 +169,15 @@ export function injectVirtualShardColumn(statement: CreateTableStatement): strin
 		],
 	};
 
-	// Insert _virtualShard as the first column
-	modifiedStatement.columns.unshift(virtualShardColumn);
+	// Insert _virtualShard as the last column
+	modifiedStatement.columns.push(virtualShardColumn);
 
-	// Create composite PRIMARY KEY constraint with _virtualShard prepended
+	// Create composite PRIMARY KEY constraint with _virtualShard appended
 	if (primaryKeyColumns.length > 0) {
 		const compositePKConstraint: TableConstraint = {
 			type: 'TableConstraint',
 			constraint: 'PRIMARY KEY',
-			columns: [{ type: 'Identifier', name: '_virtualShard' }, ...primaryKeyColumns.map((name) => ({ type: 'Identifier' as const, name }))],
+			columns: [...primaryKeyColumns.map((name) => ({ type: 'Identifier' as const, name })), { type: 'Identifier', name: '_virtualShard' }],
 		};
 
 		// Add or initialize constraints array

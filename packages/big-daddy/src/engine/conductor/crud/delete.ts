@@ -1,4 +1,5 @@
-import type { DeleteStatement } from '@databases/sqlite-ast';
+import type { DeleteStatement, SelectStatement } from '@databases/sqlite-ast';
+import { parse, generate } from '@databases/sqlite-ast';
 import { logger } from '../../../logger';
 import type { QueryResult, QueryHandlerContext, ShardInfo } from '../types';
 import type { IndexMaintenanceEventJob } from '../../queue/types';
@@ -10,7 +11,6 @@ import {
 	getCachedQueryPlanData,
 	enqueueIndexMaintenanceJob,
 } from '../utils/write';
-import { injectVirtualShardFilter } from '../utils/helpers';
 
 /**
  * Build a key value for an indexed column(s) from a row
@@ -36,9 +36,10 @@ function buildIndexKeyValue(row: Record<string, any>, columns: string[]): string
 /**
  * Capture rows that will be deleted before deletion, for index maintenance
  *
- * For each shard, we need to:
- * 1. SELECT the indexed columns + _virtualShard to capture what will be deleted
+ * Uses executeOnShards with batch statement support to:
+ * 1. SELECT the indexed columns to capture what will be deleted
  * 2. Execute the DELETE to remove the rows
+ * Both queries are executed in sequence per shard in a single call, reducing round trips.
  *
  * @returns Captured rows per shard and delete results
  */
@@ -50,11 +51,6 @@ async function captureDeletedRows(
 	shardsToQuery: ShardInfo[],
 	virtualIndexes: Array<{ index_name: string; columns: string }>,
 ): Promise<{ capturedRows: Map<number, Record<string, any>[]>; deleteResults: QueryResult[] }> {
-	const { storage } = context;
-	const BATCH_SIZE = 7;
-	const capturedRows = new Map<number, Record<string, any>[]>();
-	const allDeleteResults: QueryResult[] = [];
-
 	// Build the indexed column list
 	const indexedColumns = new Set<string>();
 	for (const index of virtualIndexes) {
@@ -62,69 +58,43 @@ async function captureDeletedRows(
 		columns.forEach((col) => indexedColumns.add(col));
 	}
 
-	const columnList = Array.from(indexedColumns).join(', ');
+	const selectStatement: SelectStatement = {
+		type: 'SelectStatement',
+		select: [...indexedColumns].map((column) => ({
+			type: 'SelectClause',
+			expression: { type: 'Identifier', name: column },
+		})),
+		from: statement.table,
+		where: statement.where,
+	};
 
-	// Process shards in batches
-	for (let i = 0; i < shardsToQuery.length; i += BATCH_SIZE) {
-		const batch = shardsToQuery.slice(i, i + BATCH_SIZE);
+	// Execute both SELECT and DELETE in a single batch call to executeOnShards
+	// This reduces network round-trips: instead of 2 calls per shard, we make 1 call
+	// The results array contains [selectResults, deleteResults] for each shard
+	const { results: batchResults } = await executeOnShards(
+		context,
+		shardsToQuery,
+		[selectStatement, statement], // Execute both statements in sequence per shard
+		params,
+	);
 
-		const batchResults = await Promise.all(
-			batch.map(async (shard) => {
-				const storageId = storage.idFromName(shard.node_id);
-				const storageStub = storage.get(storageId);
+	// Map results by shard
+	const capturedRows = new Map<number, Record<string, any>[]>();
+	const finalDeleteResults: QueryResult[] = [];
 
-				try {
-					// Clone statement to avoid mutations
-					const selectStatementClone = JSON.parse(JSON.stringify(statement));
-					const deleteStatementClone = JSON.parse(JSON.stringify(statement));
+	for (let i = 0; i < shardsToQuery.length; i++) {
+		const shard = shardsToQuery[i]!;
+		const [selectResult, deleteResult] = (batchResults as QueryResult[][])[i]!;
 
-					// Build SELECT query to capture indexed columns + _virtualShard
-					const selectQuery = `SELECT ${columnList}, _virtualShard FROM ${tableName} WHERE _virtualShard = ?`;
-					const selectParams = [shard.shard_id];
-
-					// Get DELETE query with shard filter
-					const { modifiedQuery: deleteModified, modifiedParams: deleteParams } = injectVirtualShardFilter(
-						deleteStatementClone,
-						params,
-						shard.shard_id,
-					);
-
-					// Execute both SELECT and DELETE in parallel
-					const selectResultPromise = storageStub.executeQuery({
-						query: selectQuery,
-						params: selectParams,
-					});
-					const deleteResultPromise = storageStub.executeQuery({
-						query: deleteModified,
-						params: deleteParams,
-					});
-
-					const results = await Promise.all<any>([selectResultPromise, deleteResultPromise]);
-					const selectResult = results[0];
-					const deleteResult = results[1];
-
-					const rows = (selectResult as any).rows || [];
-					// Filter rows to match DELETE WHERE clause
-					// For now, store all rows from the shard - the DELETE will be more selective
-					// but we can't easily re-apply the WHERE clause without re-parsing
-					// Instead, we should execute the SELECT with the same WHERE as DELETE
-					capturedRows.set(shard.shard_id, rows as Record<string, any>[]);
-					allDeleteResults.push({
-						rows: [],
-						rowsAffected: (deleteResult as any).rowsAffected ?? 0,
-					});
-				} catch (error) {
-					logger.error('Failed to capture deleted rows', {
-						shardId: shard.shard_id,
-						error: error instanceof Error ? error.message : String(error),
-					});
-					throw error;
-				}
-			}),
-		);
+		const rows = (selectResult as any).rows || [];
+		capturedRows.set(shard.shard_id, rows as Record<string, any>[]);
+		finalDeleteResults.push({
+			rows: [],
+			rowsAffected: deleteResult!.rowsAffected ?? 0,
+		});
 	}
 
-	return { capturedRows, deleteResults: allDeleteResults };
+	return { capturedRows, deleteResults: finalDeleteResults };
 }
 
 /**
@@ -200,12 +170,7 @@ export async function handleDelete(
 	logger.setTags({ table: tableName });
 
 	// STEP 1: Get cached query plan data
-	const { planData } = await getCachedQueryPlanData(
-		context,
-		tableName,
-		statement,
-		params,
-	);
+	const { planData } = await getCachedQueryPlanData(context, tableName, statement, params);
 
 	logger.info('Query plan determined for DELETE', {
 		shardsSelected: planData.shardsToQuery.length,
@@ -273,18 +238,14 @@ export async function handleDelete(
 		}));
 	} else {
 		// Standard path: no indexes, just execute DELETE
-		const execResult = await executeOnShards(
-			context,
-			shardsToQuery,
-			statement,
-			params,
-		);
+		const execResult = await executeOnShards(context, shardsToQuery, statement, params);
 
 		logger.info('Shard execution completed for DELETE', {
 			shardsQueried: shardsToQuery.length,
 		});
 
-		results = execResult.results;
+		// Single statement execution returns QueryResult[] (not QueryResult[][])
+		results = execResult.results as QueryResult[];
 		shardStats = execResult.shardStats;
 	}
 
