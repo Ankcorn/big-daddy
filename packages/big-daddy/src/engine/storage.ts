@@ -3,12 +3,10 @@ import { withLogTags } from 'workers-tagged-logger';
 import { logger } from '../logger';
 
 // Type definitions for Storage operations
-export type QueryType = 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'CREATE' | 'DROP' | 'ALTER' | 'PRAGMA' | 'UNKNOWN';
 
 export interface QueryResult {
 	rows: Record<string, any>[];
 	rowsAffected?: number;
-	queryType: QueryType;
 }
 
 export interface BatchQueryResult {
@@ -19,7 +17,6 @@ export interface BatchQueryResult {
 export interface QueryBatch {
 	query: string;
 	params?: any[];
-	queryType: QueryType;
 	correlationId?: string; // Optional correlation ID for tracing
 }
 
@@ -63,7 +60,6 @@ export class Storage extends DurableObject<Env> {
 			logger.debug('Executing storage query', {
 				queryCount: queryArray.length,
 				isBatch,
-				queryTypes: queryArray.map(q => q.queryType).join(', '),
 			});
 
 			const results: QueryResult[] = [];
@@ -77,7 +73,6 @@ export class Storage extends DurableObject<Env> {
 					const rowsAffected = result.rowsWritten ?? 0;
 
 					logger.debug('Query executed on shard', {
-						queryType: batch.queryType,
 						rowCount: rows.length,
 						rowsAffected,
 						duration: Date.now() - queryStartTime,
@@ -86,7 +81,6 @@ export class Storage extends DurableObject<Env> {
 					results.push({
 						rows,
 						rowsAffected,
-						queryType: batch.queryType,
 					});
 
 					totalRowsAffected += rowsAffected;

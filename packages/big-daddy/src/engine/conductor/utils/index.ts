@@ -4,4 +4,4 @@
 
 export { injectVirtualShardFilter, injectVirtualShardColumn, mergeResultsSimple, extractKeyValueFromRow } from './helpers';
 
-export { executeWriteOnShards, logWriteIfResharding, invalidateCacheForWrite, enqueueIndexMaintenanceJob, getCachedWriteQueryPlanData } from './write';
+export { executeOnShards, logWriteIfResharding, invalidateCacheForWrite, enqueueIndexMaintenanceJob, getCachedQueryPlanData } from './write';

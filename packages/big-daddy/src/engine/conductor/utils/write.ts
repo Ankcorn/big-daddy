@@ -1,17 +1,22 @@
-import type { InsertStatement, UpdateStatement, DeleteStatement, Statement } from '@databases/sqlite-ast';
+import type { SelectStatement, InsertStatement, UpdateStatement, DeleteStatement } from '@databases/sqlite-ast';
 import { logger } from '../../../logger';
 import type { QueryResult, ShardStats, QueryHandlerContext, ShardInfo } from '../types';
 import type { IndexMaintenanceJob, IndexJob } from '../../queue/types';
 import { injectVirtualShardFilter } from './helpers';
 /**
- * Execute a write query (INSERT/UPDATE/DELETE) on shards
+ * Execute a query (SELECT/INSERT/UPDATE/DELETE) on shards in parallel batches
+ *
+ * This method:
+ * 1. Processes shards in batches of 7 to avoid overwhelming the system
+ * 2. Injects _virtualShard filter for shard-specific isolation
+ * 3. Tracks execution statistics for each shard
+ * 4. Returns merged results and shard performance data
  */
-export async function executeWriteOnShards(
+export async function executeOnShards(
 	context: QueryHandlerContext,
 	shardsToQuery: ShardInfo[],
-	query: string,
+	statement: SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
 	params: any[],
-	queryType: 'INSERT' | 'UPDATE' | 'DELETE',
 ): Promise<{ results: QueryResult[]; shardStats: ShardStats[] }> {
 	const { storage } = context;
 	const BATCH_SIZE = 7;
@@ -30,18 +35,13 @@ export async function executeWriteOnShards(
 				const storageStub = storage.get(storageId);
 
 				try {
-					const { modifiedQuery, modifiedParams } = injectVirtualShardFilter(
-						query,
-						params,
-						shard.shard_id,
-						shard.table_name,
-						queryType,
-					);
+					// Clone the statement to avoid mutations when processing multiple shards
+					const statementClone = JSON.parse(JSON.stringify(statement));
+					const { modifiedQuery, modifiedParams } = injectVirtualShardFilter(statementClone, params, shard.shard_id);
 
 					const rawResult = (await storageStub.executeQuery({
 						query: modifiedQuery,
 						params: modifiedParams,
-						queryType,
 					})) as any;
 
 					const shardDuration = Date.now() - shardStartTime;
@@ -61,7 +61,7 @@ export async function executeWriteOnShards(
 						rowsAffected: rawResult.rowsAffected ?? 0,
 					};
 				} catch (error) {
-					logger.error(`${queryType} shard query failed`, {
+					logger.error(`${statement.type} shard query failed`, {
 						shardId: shard.shard_id,
 						error: error instanceof Error ? error.message : String(error),
 					});
@@ -99,8 +99,10 @@ export async function logWriteIfResharding(
 	}
 
 	// Log the write operation to the queue for later replay
-	const operation = (operationType === 'InsertStatement' ? 'INSERT' :
-	                  operationType === 'UpdateStatement' ? 'UPDATE' : 'DELETE') as 'INSERT' | 'UPDATE' | 'DELETE';
+	const operation = (operationType === 'InsertStatement' ? 'INSERT' : operationType === 'UpdateStatement' ? 'UPDATE' : 'DELETE') as
+		| 'INSERT'
+		| 'UPDATE'
+		| 'DELETE';
 
 	const changeLogEntry = {
 		type: 'resharding_change_log' as const,
@@ -171,7 +173,6 @@ export async function enqueueIndexMaintenanceJob(
 		created_at: new Date().toISOString(),
 		correlation_id: context.correlationId,
 	};
-
 
 	try {
 		if (indexQueue) {
@@ -281,9 +282,15 @@ function invalidateIndexCacheForDelete(
 }
 
 /**
- * Get cached query plan data (for write operations)
+ * Get cached query plan data
+ *
+ * This function checks the cache first before calling the Topology DO.
+ * For cacheable queries (SELECT/UPDATE/DELETE with WHERE clause), this can eliminate
+ * the Topology DO call entirely.
+ *
+ * @returns Query plan data and whether it was a cache hit
  */
-export async function getCachedWriteQueryPlanData(
+export async function getCachedQueryPlanData(
 	context: QueryHandlerContext,
 	tableName: string,
 	statement: any,

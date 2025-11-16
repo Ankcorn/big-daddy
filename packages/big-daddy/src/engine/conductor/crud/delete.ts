@@ -3,12 +3,12 @@ import { logger } from '../../../logger';
 import type { QueryResult, QueryHandlerContext, ShardInfo } from '../types';
 import { mergeResultsSimple } from '../utils';
 import {
-	executeWriteOnShards,
+	executeOnShards,
 	logWriteIfResharding,
 	invalidateCacheForWrite,
-	getCachedWriteQueryPlanData,
+	getCachedQueryPlanData,
 	enqueueIndexMaintenanceJob,
-} from '../utils';
+} from '../utils/write';
 
 /**
  * Handle DELETE query
@@ -33,7 +33,7 @@ export async function handleDelete(
 	logger.setTags({ table: tableName });
 
 	// STEP 1: Get cached query plan data
-	const { planData } = await getCachedWriteQueryPlanData(
+	const { planData } = await getCachedQueryPlanData(
 		context,
 		tableName,
 		statement,
@@ -51,12 +51,11 @@ export async function handleDelete(
 	await logWriteIfResharding(tableName, statement.type, query, params, context);
 
 	// STEP 3: Execute query on all target shards in parallel
-	const { results, shardStats } = await executeWriteOnShards(
+	const { results, shardStats } = await executeOnShards(
 		context,
 		shardsToQuery,
-		query,
+		statement,
 		params,
-		'DELETE',
 	);
 
 	logger.info('Shard execution completed for DELETE', {

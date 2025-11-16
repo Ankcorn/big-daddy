@@ -2,7 +2,7 @@ import type { InsertStatement } from '@databases/sqlite-ast';
 import { logger } from '../../../logger';
 import type { QueryResult, QueryHandlerContext, ShardInfo } from '../types';
 import { mergeResultsSimple } from '../utils';
-import { executeWriteOnShards, logWriteIfResharding, invalidateCacheForWrite, getCachedWriteQueryPlanData } from '../utils';
+import { executeOnShards, logWriteIfResharding, invalidateCacheForWrite, getCachedQueryPlanData } from '../utils/write';
 
 /**
  * Handle INSERT query
@@ -27,7 +27,7 @@ export async function handleInsert(
 	logger.setTags({ table: tableName });
 
 	// STEP 1: Get cached query plan data
-	const { planData } = await getCachedWriteQueryPlanData(context, tableName, statement, params);
+	const { planData } = await getCachedQueryPlanData(context, tableName, statement, params);
 
 	logger.info('Query plan determined for INSERT', {
 		shardsSelected: planData.shardsToQuery.length,
@@ -39,7 +39,7 @@ export async function handleInsert(
 	await logWriteIfResharding(tableName, statement.type, query, params, context);
 
 	// STEP 3: Execute query on all target shards in parallel
-	const { results, shardStats } = await executeWriteOnShards(context, shardsToQuery, query, params, 'INSERT');
+	const { results, shardStats } = await executeOnShards(context, shardsToQuery, statement, params);
 
 	logger.info('Shard execution completed for INSERT', {
 		shardsQueried: shardsToQuery.length,
