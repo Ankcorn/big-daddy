@@ -2,7 +2,7 @@
  * Conductor utilities - Shared helpers for query operations
  */
 
-export { injectVirtualShardFilter, injectVirtualShardColumn, mergeResultsSimple } from './helpers';
+export { injectVirtualShard, injectVirtualShardColumn, mergeResultsSimple } from './helpers';
 
 export { extractKeyValueFromRow } from './utils';
 

@@ -393,7 +393,7 @@ export async function executeOnShards(
 	params?: any[],
 ): Promise<{ results: QueryResult[] | QueryResult[][] | [QueryResult[], QueryResult[]] | [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] }> {
 	// Pass through to executeOnShardsEffect, which handles both formats
-	const effect = executeOnShardsEffect(context, shardsToQuery, statementsInput as any, params);
+	const effect = executeOnShardsEffect(context, shardsToQuery, statementsInput as any, params || []);
 	return Effect.runPromise(effect);
 }
 
