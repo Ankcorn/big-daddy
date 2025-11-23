@@ -34,11 +34,20 @@ function buildIndexKeyValue(row: Record<string, any>, columns: string[]): string
 /**
  * Capture rows before and after UPDATE for index maintenance
  *
- * Uses executeOnShards with batch statement support to:
- * 1. SELECT the indexed columns before UPDATE (capture old values)
+ * Executes three separate calls per shard:
+ * 1. SELECT all indexed columns before UPDATE (capture old values)
  * 2. Execute the UPDATE to modify rows
- * 3. SELECT the indexed columns after UPDATE (capture new values)
- * Both queries are executed in sequence per shard in a single call, reducing round trips.
+ * 3. SELECT all indexed columns after UPDATE (capture new values)
+ *
+ * Important: SELECT statements intentionally have no WHERE clause so we capture ALL rows
+ * in each shard. This is necessary for proper global deduplication across shards - we need
+ * to know about all indexed values in the table to avoid incorrectly removing values that
+ * are still used by other rows.
+ *
+ * Note: Unlike DELETE which batches [SELECT, DELETE], we execute UPDATE statements separately
+ * because UPDATE's SET clause has parameters that SELECT doesn't use. This causes placeholder
+ * count mismatches when batching statements with different parameter requirements.
+ * The separate calls trade some round-trip efficiency for correct parameter binding.
  *
  * @returns Old rows per shard, new rows per shard, and update results
  */
@@ -61,6 +70,10 @@ async function captureUpdatedRows(
 		columns.forEach((col) => indexedColumns.add(col));
 	}
 
+	// Create a SELECT statement WITHOUT the WHERE clause to get all rows
+	// This is necessary for proper global deduplication:
+	// We need to know about ALL indexed values in the table to avoid incorrectly
+	// removing values that are still used by other rows
 	const selectStatement: SelectStatement = {
 		type: 'SelectStatement',
 		select: [...indexedColumns].map((column) => ({
@@ -68,17 +81,31 @@ async function captureUpdatedRows(
 			expression: { type: 'Identifier', name: column },
 		})),
 		from: statement.table,
-		where: statement.where,
+		// Intentionally omit the WHERE clause - we want ALL rows for deduplication
 	};
 
-	// Execute SELECT + UPDATE + SELECT in a single batch call to executeOnShards
-	// This reduces network round-trips: instead of 3 calls per shard, we make 1 call
-	// The results array contains [selectResults, updateResults, selectResults] for each shard
-	const { results: batchResults } = await executeOnShards(
+	// Execute SELECT before UPDATE
+	const selectBeforeResults = await executeOnShards(
 		context,
 		shardsToQuery,
-		[selectStatement, statement, selectStatement], // SELECT before, UPDATE, SELECT after
+		selectStatement,
+		[], // No params needed - SELECT has no WHERE clause
+	);
+
+	// Execute UPDATE
+	const updateResults = await executeOnShards(
+		context,
+		shardsToQuery,
+		statement,
 		params,
+	);
+
+	// Execute SELECT after UPDATE
+	const selectAfterResults = await executeOnShards(
+		context,
+		shardsToQuery,
+		selectStatement,
+		[], // No params needed - SELECT has no WHERE clause
 	);
 
 	// Map results by shard
@@ -88,7 +115,9 @@ async function captureUpdatedRows(
 
 	for (let i = 0; i < shardsToQuery.length; i++) {
 		const shard = shardsToQuery[i]!;
-		const [selectBeforeResult, updateResult, selectAfterResult] = (batchResults as QueryResult[][])[i]!;
+		const selectBeforeResult = (selectBeforeResults.results as QueryResult[])[i]!;
+		const updateResult = (updateResults.results as QueryResult[])[i]!;
+		const selectAfterResult = (selectAfterResults.results as QueryResult[])[i]!;
 
 		const oldRowsData = (selectBeforeResult as any).rows || [];
 		const newRowsData = (selectAfterResult as any).rows || [];
@@ -107,15 +136,21 @@ async function captureUpdatedRows(
 /**
  * Generate index maintenance events from old and new row values
  *
- * Compares the indexed values before and after the update within each shard.
- * Deduplicates by shard to avoid removing values that are still present.
+ * Compares the indexed values before and after the update across ALL shards.
+ * Deduplicates globally to avoid removing values that are still present anywhere in the table.
+ *
+ * For example, if 'email@example.com' appears in rows on multiple shards:
+ * - If row 1 (shard 0) changes away from 'email@example.com'
+ * - But row 2 (shard 1) still has 'email@example.com'
+ * - Then 'email@example.com' should NOT be removed from the index
  */
 function dedupeUpdatedRowsToEvents(
 	oldRows: Map<number, Record<string, any>[]>,
 	newRows: Map<number, Record<string, any>[]>,
 	virtualIndexes: Array<{ index_name: string; columns: string }>,
 ): IndexMaintenanceEventJob['events'] {
-	// Use a Map to track events by shard: key is "index_name:key_value:shard_id"
+	// Use a Map to track events: key is "index_name:key_value:shard_id"
+	// This allows per-shard tracking while checking global deduplication
 	const eventMap = new Map<
 		string,
 		{
@@ -126,54 +161,106 @@ function dedupeUpdatedRowsToEvents(
 		}
 	>();
 
-	// Process each shard
-	for (const [shardId, oldRowsList] of oldRows.entries()) {
-		const newRowsList = newRows.get(shardId) || [];
+	// First pass: collect global old and new values across all shards
+	const globalOldValues = new Map<string, Set<number>>(); // "index_name:key_value" -> set of shard IDs
+	const globalNewValues = new Map<string, Set<number>>(); // "index_name:key_value" -> set of shard IDs
 
-		// For each index, determine what values to add/remove
+	for (const [shardId, oldRowsList] of oldRows.entries()) {
 		for (const index of virtualIndexes) {
 			const indexColumns = JSON.parse(index.columns) as string[];
-
-			// Build sets of values before and after
-			const oldValues = new Set<string>();
 			for (const row of oldRowsList) {
 				const keyValue = buildIndexKeyValue(row, indexColumns);
 				if (keyValue !== null) {
-					oldValues.add(keyValue);
+					const globalKey = `${index.index_name}:${keyValue}`;
+					if (!globalOldValues.has(globalKey)) {
+						globalOldValues.set(globalKey, new Set());
+					}
+					globalOldValues.get(globalKey)!.add(shardId);
 				}
 			}
+		}
+	}
 
-			const newValues = new Set<string>();
+	for (const [shardId, newRowsList] of newRows.entries()) {
+		for (const index of virtualIndexes) {
+			const indexColumns = JSON.parse(index.columns) as string[];
 			for (const row of newRowsList) {
 				const keyValue = buildIndexKeyValue(row, indexColumns);
 				if (keyValue !== null) {
-					newValues.add(keyValue);
+					const globalKey = `${index.index_name}:${keyValue}`;
+					if (!globalNewValues.has(globalKey)) {
+						globalNewValues.set(globalKey, new Set());
+					}
+					globalNewValues.get(globalKey)!.add(shardId);
+				}
+			}
+		}
+	}
+
+	// Second pass: generate events based on global changes
+	// For each shard, check which values were removed/added locally
+	// But only queue a remove if the value is not present in ANY shard after the update
+	for (const [shardId, oldRowsList] of oldRows.entries()) {
+		const newRowsList = newRows.get(shardId) || [];
+
+		for (const index of virtualIndexes) {
+			const indexColumns = JSON.parse(index.columns) as string[];
+
+			// Get old and new values for this shard
+			const shardOldValues = new Set<string>();
+			for (const row of oldRowsList) {
+				const keyValue = buildIndexKeyValue(row, indexColumns);
+				if (keyValue !== null) {
+					shardOldValues.add(keyValue);
 				}
 			}
 
-			// Determine removals (values in old but not in new)
-			for (const value of oldValues) {
-				if (!newValues.has(value)) {
-					const eventKey = `${index.index_name}:${value}:${shardId}`;
-					eventMap.set(eventKey, {
-						index_name: index.index_name,
-						key_value: value,
-						shard_id: shardId,
-						operation: 'remove',
-					});
+			const shardNewValues = new Set<string>();
+			for (const row of newRowsList) {
+				const keyValue = buildIndexKeyValue(row, indexColumns);
+				if (keyValue !== null) {
+					shardNewValues.add(keyValue);
 				}
 			}
 
-			// Determine additions (values in new but not in old)
-			for (const value of newValues) {
-				if (!oldValues.has(value)) {
-					const eventKey = `${index.index_name}:${value}:${shardId}`;
-					eventMap.set(eventKey, {
-						index_name: index.index_name,
-						key_value: value,
-						shard_id: shardId,
-						operation: 'add',
-					});
+			// Check what changed locally on this shard
+			// But verify globally before queueing remove events
+			for (const value of shardOldValues) {
+				if (!shardNewValues.has(value)) {
+					// Value was removed from this shard - check if it still exists globally
+					const globalKey = `${index.index_name}:${value}`;
+					const globalShards = globalNewValues.get(globalKey) || new Set();
+
+					// Only queue removal if the value doesn't exist anywhere in the table
+					if (globalShards.size === 0) {
+						const eventKey = `${index.index_name}:${value}:${shardId}`;
+						eventMap.set(eventKey, {
+							index_name: index.index_name,
+							key_value: value,
+							shard_id: shardId,
+							operation: 'remove',
+						});
+					}
+				}
+			}
+
+			// Check additions: values that are new on this shard
+			for (const value of shardNewValues) {
+				if (!shardOldValues.has(value)) {
+					// Value is new on this shard - but check if it was globally removed
+					const globalKey = `${index.index_name}:${value}`;
+					const wasGloballyOld = globalOldValues.has(globalKey);
+
+					// Only queue addition if this is truly a new value (wasn't in the table before)
+					if (!wasGloballyOld) {
+						const eventKey = `${index.index_name}:${value}:${shardId}`;
+						eventMap.set(eventKey, {
+							index_name: index.index_name,
+							key_value: value,
+							shard_id: shardId,
+							operation: 'add',
+						});
+					}
 				}
 			}
 		}
