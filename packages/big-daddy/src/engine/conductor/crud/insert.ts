@@ -1,72 +1,45 @@
 import type { InsertStatement } from '@databases/sqlite-ast';
 import { logger } from '../../../logger';
 import type { QueryResult, QueryHandlerContext, ShardInfo } from '../types';
-import type { IndexMaintenanceEventJob } from '../../queue/types';
 import { mergeResultsSimple } from '../utils';
-import { executeOnShards, logWriteIfResharding, invalidateCacheForWrite, getCachedQueryPlanData } from '../utils/write';
-import { injectVirtualShardFilter } from '../utils/helpers';
+import {
+	executeOnShards,
+	logWriteIfResharding,
+	invalidateCacheForWrite,
+	getCachedQueryPlanData,
+} from '../utils/write';
+import { prepareIndexMaintenanceQueries, dispatchIndexSyncingFromQueryResults } from '../utils/index-maintenance';
 
 /**
- * Build a key value for an indexed column(s) from row data
- * Returns null if any indexed column is NULL (NULL values are not indexed)
- */
-function buildIndexKeyValue(rowData: Record<string, any>, columns: string[]): string | null {
-	if (columns.length === 1) {
-		const value = rowData[columns[0]!];
-		if (value === null || value === undefined) {
-			return null;
-		}
-		return String(value);
-	} else {
-		// Composite index - build key from all column values
-		const values = columns.map((col) => rowData[col]);
-		if (values.some((v) => v === null || v === undefined)) {
-			return null;
-		}
-		return JSON.stringify(values);
-	}
-}
-
-/**
- * Extract inserted rows and generate index maintenance events
+ * Extract inserted rows from INSERT statement
  *
- * For each shard that received inserts:
- * 1. Extract column values from statement and params
- * 2. Deduplicate by (index_name, key_value, shard_id)
- * 3. Generate 'add' events
+ * Parses the INSERT AST to extract column names and values,
+ * building a row map indexed by shard ID (all rows to all target shards in this simplified implementation)
  */
-function generateInsertIndexEvents(
+function extractInsertedRows(
 	statement: InsertStatement,
 	params: any[],
 	shardsToQuery: ShardInfo[],
-	virtualIndexes: Array<{ index_name: string; columns: string }>,
-	shardMapping: Map<string, number[]>, // Maps row index to shard IDs it goes to
-): IndexMaintenanceEventJob['events'] {
-	// Use a Set to deduplicate: key is "index_name:key_value:shard_id"
-	const dedupedMap = new Map<
-		string,
-		{
-			index_name: string;
-			key_value: string;
-			shard_id: number;
-			operation: 'add';
-		}
-	>();
+): Map<number, Record<string, any>[]> {
+	const newRows = new Map<number, Record<string, any>[]>();
 
-	// Extract column names and values from INSERT statement
-	const columns = statement.columns;
-	if (!columns || columns.length === 0) {
-		return []; // No columns specified, can't extract values
+	// Initialize empty arrays for each shard
+	for (const shard of shardsToQuery) {
+		newRows.set(shard.shard_id, []);
 	}
 
-	// Extract values from the VALUES clause
+	const columns = statement.columns;
+	if (!columns || columns.length === 0) {
+		return newRows; // No columns specified, can't extract values
+	}
+
 	const values = statement.values;
 	if (!values || values.length === 0) {
-		return []; // No values to insert
+		return newRows; // No values to insert
 	}
 
 	// For each inserted row
-	values.forEach((valueList, rowIndex) => {
+	values.forEach((valueList) => {
 		// Build a row object with column names mapped to values
 		const rowData: Record<string, any> = {};
 		valueList.forEach((value, colIndex) => {
@@ -91,33 +64,17 @@ function generateInsertIndexEvents(
 			}
 		});
 
-		// For each index, extract key values
-		for (const index of virtualIndexes) {
-			const indexColumns = JSON.parse(index.columns) as string[];
-			const keyValue = buildIndexKeyValue(rowData, indexColumns);
-
-			if (keyValue === null) {
-				// Skip NULL values - they're not indexed
-				continue;
-			}
-
-			// Get shard IDs this row goes to
-			const shardIds = shardMapping.get(String(rowIndex)) || [];
-			for (const shardId of shardIds) {
-				const dedupKey = `${index.index_name}:${keyValue}:${shardId}`;
-				if (!dedupedMap.has(dedupKey)) {
-					dedupedMap.set(dedupKey, {
-						index_name: index.index_name,
-						key_value: keyValue,
-						shard_id: shardId,
-						operation: 'add',
-					});
-				}
-			}
+		// Map this row to all target shards
+		// TODO: In practice, each row goes to exactly one shard based on partition key,
+		// but we don't know the exact mapping yet. The index handler deduplicates anyway.
+		for (const shard of shardsToQuery) {
+			const shardRows = newRows.get(shard.shard_id) || [];
+			shardRows.push(rowData);
+			newRows.set(shard.shard_id, shardRows);
 		}
 	});
 
-	return Array.from(dedupedMap.values());
+	return newRows;
 }
 
 /**
@@ -126,10 +83,11 @@ function generateInsertIndexEvents(
  * This handler:
  * 1. Gets the query plan (which shards to insert to) from topology
  * 2. Logs the write if resharding is in progress
- * 3. Executes the query on all target shards in parallel
- * 4. Enqueues async index maintenance for any indexes on this table
- * 5. Invalidates relevant cache entries
- * 6. Merges and returns results
+ * 3. Prepares queries (just INSERT since INSERT doesn't batch with SELECT)
+ * 4. Executes the query on all target shards in parallel
+ * 5. Dispatches index maintenance events if needed
+ * 6. Invalidates relevant cache entries
+ * 7. Merges and returns results
  */
 export async function handleInsert(
 	statement: InsertStatement,
@@ -137,9 +95,7 @@ export async function handleInsert(
 	params: any[],
 	context: QueryHandlerContext,
 ): Promise<QueryResult> {
-	const { databaseId, indexQueue, correlationId } = context;
 	const tableName = statement.table.name;
-
 	logger.setTags({ table: tableName });
 
 	// STEP 1: Get cached query plan data
@@ -155,65 +111,47 @@ export async function handleInsert(
 	// STEP 2: Log write if resharding is in progress
 	await logWriteIfResharding(tableName, statement.type, query, params, context);
 
-	// STEP 3: Execute query on all target shards in parallel
-	const { results, shardStats } = await executeOnShards(context, shardsToQuery, statement, params);
+	// STEP 3: Prepare queries (INSERT only, no batching needed)
+	const queries = prepareIndexMaintenanceQueries(
+		planData.virtualIndexes.length > 0,
+		statement,
+		undefined, // No selectStatement for INSERT
+		params,
+	);
+
+	// STEP 4: Execute query on all target shards in parallel
+	const execResult = await executeOnShards(context, shardsToQuery, queries);
 
 	logger.info('Shard execution completed for INSERT', {
 		shardsQueried: shardsToQuery.length,
 	});
 
-	// STEP 4: Index maintenance - generate and queue index events if indexes exist
+	// STEP 5: Dispatch index maintenance if needed
 	if (planData.virtualIndexes.length > 0) {
-		// Map all rows to all target shards (simplified: we don't know exact per-row shard distribution yet)
-		// In practice, each row will hit one shard, but for event generation we map to all shardsToQuery
-		const shardMapping = new Map<string, number[]>();
-		const shardIds = shardsToQuery.map((s: ShardInfo) => s.shard_id);
-		if (statement.values) {
-			statement.values.forEach((_, rowIndex) => {
-				shardMapping.set(String(rowIndex), shardIds);
-			});
-		}
+		// Extract inserted rows from statement
+		const newRows = extractInsertedRows(statement, params, shardsToQuery);
 
-		// Generate deduplicated index events
-		const events = generateInsertIndexEvents(
-			statement,
-			params,
+		// Dispatch index maintenance with extracted rows
+		await dispatchIndexSyncingFromQueryResults(
+			'INSERT',
+			execResult.results as QueryResult[][],
+			tableName,
 			shardsToQuery,
 			planData.virtualIndexes,
-			shardMapping,
+			context,
+			() => ({ newRows }), // Return extracted rows
 		);
-
-		logger.info('Generated index maintenance events for INSERT', {
-			eventCount: events.length,
-		});
-
-		// Queue the index maintenance events if any
-		if (events.length > 0 && indexQueue) {
-			const job: IndexMaintenanceEventJob = {
-				type: 'maintain_index_events',
-				database_id: databaseId,
-				table_name: tableName,
-				events,
-				created_at: new Date().toISOString(),
-				correlation_id: correlationId,
-			};
-
-			await indexQueue.send(job);
-
-			logger.info('Index maintenance events queued for INSERT', {
-				eventCount: events.length,
-			});
-		}
 	}
 
-	// STEP 5: Invalidate cache entries for write operation
+	// STEP 6: Invalidate cache entries for write operation
 	invalidateCacheForWrite(context, tableName, statement, planData.virtualIndexes, params);
 
-	// STEP 6: Merge results from all shards
+	// STEP 7: Merge results from all shards
+	const results = execResult.results as QueryResult[];
 	const result = mergeResultsSimple(results, false);
 
 	// Add shard statistics
-	result.shardStats = shardStats;
+	result.shardStats = execResult.shardStats;
 
 	logger.info('INSERT query completed', {
 		shardsQueried: shardsToQuery.length,

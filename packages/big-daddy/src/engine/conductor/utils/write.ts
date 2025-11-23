@@ -37,16 +37,27 @@ interface ShardExecutionResult {
 }
 
 /**
+ * Statement with its associated parameters
+ */
+export interface StatementWithParams {
+	statement: SelectStatement | InsertStatement | UpdateStatement | DeleteStatement;
+	params: any[];
+}
+
+/**
  * Prepare queries for a shard by injecting virtual shard filters
  * This is a pure function that transforms statements into executable queries
+ *
+ * Supports two modes:
+ * 1. Legacy: statements array + single params array (all statements share params)
+ * 2. New: statementsWithParams array (each statement has its own params)
  */
 function prepareShardQueries(
 	shard: ShardInfo,
-	statements: (SelectStatement | InsertStatement | UpdateStatement | DeleteStatement)[],
-	params: any[],
+	statementsWithParams: StatementWithParams[],
 ): ShardQueries {
-	const queries = statements.map((stmt) => {
-		const { modifiedStatement, modifiedParams } = injectVirtualShard(stmt, params, shard.shard_id);
+	const queries = statementsWithParams.map(({ statement, params }) => {
+		const { modifiedStatement, modifiedParams } = injectVirtualShard(statement, params, shard.shard_id);
 		return {
 			query: generate(modifiedStatement),
 			params: modifiedParams,
@@ -137,10 +148,9 @@ function executeSingleShardQueries(
  * Execute query/queries (SELECT/INSERT/UPDATE/DELETE) on shards in parallel batches
  * This function uses Effect for composing async operations with proper error handling
  *
- * Type-safe overloads:
- * - Single statement: results is QueryResult[]
- * - Two statements: results is [QueryResult[], QueryResult[]]
- * - Three statements: results is [QueryResult[], QueryResult[], QueryResult[]]
+ * Accepts statements+params in either format:
+ * 1. Legacy: statements + shared params
+ * 2. New: StatementWithParams[] (each statement has its own params)
  *
  * Implementation details:
  * 1. Processes shards in batches of 7 to avoid overwhelming the system
@@ -150,7 +160,7 @@ function executeSingleShardQueries(
  * 5. Returns merged results and shard performance data
  */
 
-// Overload 1: Single statement
+// Overload 1: Single statement + shared params
 function executeOnShardsEffect(
 	context: QueryHandlerContext,
 	shardsToQuery: ShardInfo[],
@@ -158,7 +168,7 @@ function executeOnShardsEffect(
 	params: any[],
 ): Effect.Effect<{ results: QueryResult[]; shardStats: ShardStats[] }, ShardQueryExecutionError>;
 
-// Overload 2: Two statements
+// Overload 2: Two statements + shared params
 function executeOnShardsEffect(
 	context: QueryHandlerContext,
 	shardsToQuery: ShardInfo[],
@@ -169,7 +179,7 @@ function executeOnShardsEffect(
 	params: any[],
 ): Effect.Effect<{ results: [QueryResult[], QueryResult[]]; shardStats: ShardStats[] }, ShardQueryExecutionError>;
 
-// Overload 3: Three statements
+// Overload 3: Three statements + shared params
 function executeOnShardsEffect(
 	context: QueryHandlerContext,
 	shardsToQuery: ShardInfo[],
@@ -184,7 +194,7 @@ function executeOnShardsEffect(
 	ShardQueryExecutionError
 >;
 
-// Overload 4: General array (for internal use with flexible length)
+// Overload 4: General array + shared params
 function executeOnShardsEffect(
 	context: QueryHandlerContext,
 	shardsToQuery: ShardInfo[],
@@ -195,30 +205,60 @@ function executeOnShardsEffect(
 	ShardQueryExecutionError
 >;
 
+// Overload 5: StatementWithParams array (new format)
+function executeOnShardsEffect(
+	context: QueryHandlerContext,
+	shardsToQuery: ShardInfo[],
+	statementsWithParams: readonly StatementWithParams[],
+): Effect.Effect<
+	{ results: QueryResult[] | QueryResult[][]; shardStats: ShardStats[] },
+	ShardQueryExecutionError
+>;
+
 // Implementation
 function executeOnShardsEffect(
 	context: QueryHandlerContext,
 	shardsToQuery: ShardInfo[],
-	statement:
+	statementsInput:
 		| SelectStatement
 		| InsertStatement
 		| UpdateStatement
 		| DeleteStatement
-		| readonly (SelectStatement | InsertStatement | UpdateStatement | DeleteStatement)[],
-	params: any[],
+		| readonly (SelectStatement | InsertStatement | UpdateStatement | DeleteStatement)[]
+		| readonly StatementWithParams[],
+	params?: any[],
 ): Effect.Effect<
 	{ results: QueryResult[] | QueryResult[][] | [QueryResult[], QueryResult[]] | [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] },
 	ShardQueryExecutionError
 > {
 	const BATCH_SIZE = 7;
 
-	// Detect if we're doing single or batch query execution
-	const isMultipleStatements = Array.isArray(statement);
-	const statements = isMultipleStatements ? statement : [statement];
-	const statementType = statements[0]!.type;
+	// Detect format and normalize to StatementWithParams[]
+	const isNewFormat = Array.isArray(statementsInput) && statementsInput.length > 0 && 'statement' in statementsInput[0];
+	let statementsWithParams: StatementWithParams[];
+	let isMultipleStatements: boolean;
+	let statementType: string;
+
+	if (isNewFormat) {
+		// New format: already have StatementWithParams[]
+		statementsWithParams = statementsInput as StatementWithParams[];
+		isMultipleStatements = statementsWithParams.length > 1;
+		statementType = statementsWithParams[0]!.statement.type;
+	} else {
+		// Legacy format: statements + shared params
+		const statements = Array.isArray(statementsInput) ? statementsInput : [statementsInput];
+		isMultipleStatements = statements.length > 1;
+		statementType = statements[0]!.type;
+
+		// Convert to StatementWithParams format: each statement paired with params
+		statementsWithParams = statements.map((stmt) => ({
+			statement: stmt as SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
+			params: params || [],
+		}));
+	}
 
 	// Prepare queries for all shards (pure transformation)
-	const allPreparedQueries = shardsToQuery.map((shard) => prepareShardQueries(shard, statements, params));
+	const allPreparedQueries = shardsToQuery.map((shard) => prepareShardQueries(shard, statementsWithParams));
 
 	// Split into batches
 	const batches = Array.from({ length: Math.ceil(allPreparedQueries.length / BATCH_SIZE) }, (_, i) =>
@@ -258,16 +298,49 @@ function executeOnShardsEffect(
 }
 
 /**
- * Backward-compatible wrapper for executeOnShardsEffect
+ * Wrapper for executeOnShardsEffect
  * Executes the Effect and returns a Promise for compatibility with existing code
  *
- * Type-safe overloads:
- * - Single statement: results is QueryResult[]
- * - Two statements: results is [QueryResult[], QueryResult[]]
- * - Three statements: results is [QueryResult[], QueryResult[], QueryResult[]]
+ * Type-safe overloads support two calling styles:
+ *
+ * Style 1: Statement(s) + params (legacy, backward compatible)
+ * - executeOnShards(context, shards, statement, params)
+ * - executeOnShards(context, shards, [stmt1, stmt2], params)
+ *
+ * Style 2: Statement+params pairs (new, for different params per statement)
+ * - executeOnShards(context, shards, [{ statement, params }])
+ * - executeOnShards(context, shards, [{ statement: s1, params: p1 }, { statement: s2, params: p2 }])
  */
 
-// Overload 1: Single statement
+// NEW: Overload for single statement+params pair
+export async function executeOnShards(
+	context: QueryHandlerContext,
+	shardsToQuery: ShardInfo[],
+	statementsWithParams: readonly [StatementWithParams],
+): Promise<{ results: QueryResult[]; shardStats: ShardStats[] }>;
+
+// NEW: Overload for two statement+params pairs
+export async function executeOnShards(
+	context: QueryHandlerContext,
+	shardsToQuery: ShardInfo[],
+	statementsWithParams: readonly [StatementWithParams, StatementWithParams],
+): Promise<{ results: [QueryResult[], QueryResult[]]; shardStats: ShardStats[] }>;
+
+// NEW: Overload for three statement+params pairs
+export async function executeOnShards(
+	context: QueryHandlerContext,
+	shardsToQuery: ShardInfo[],
+	statementsWithParams: readonly [StatementWithParams, StatementWithParams, StatementWithParams],
+): Promise<{ results: [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] }>;
+
+// NEW: Overload for general array of statement+params pairs
+export async function executeOnShards(
+	context: QueryHandlerContext,
+	shardsToQuery: ShardInfo[],
+	statementsWithParams: readonly StatementWithParams[],
+): Promise<{ results: QueryResult[] | QueryResult[][] | [QueryResult[], QueryResult[]] | [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] }>;
+
+// LEGACY: Overload 1: Single statement + shared params
 export async function executeOnShards(
 	context: QueryHandlerContext,
 	shardsToQuery: ShardInfo[],
@@ -310,16 +383,17 @@ export async function executeOnShards(
 export async function executeOnShards(
 	context: QueryHandlerContext,
 	shardsToQuery: ShardInfo[],
-	statement:
+	statementsInput:
 		| SelectStatement
 		| InsertStatement
 		| UpdateStatement
 		| DeleteStatement
-		| readonly (SelectStatement | InsertStatement | UpdateStatement | DeleteStatement)[],
-	params: any[],
+		| readonly (SelectStatement | InsertStatement | UpdateStatement | DeleteStatement)[]
+		| readonly StatementWithParams[],
+	params?: any[],
 ): Promise<{ results: QueryResult[] | QueryResult[][] | [QueryResult[], QueryResult[]] | [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] }> {
-	// Call executeOnShardsEffect with explicit type casting to resolve overload
-	const effect = executeOnShardsEffect(context, shardsToQuery, statement as any, params);
+	// Pass through to executeOnShardsEffect, which handles both formats
+	const effect = executeOnShardsEffect(context, shardsToQuery, statementsInput as any, params);
 	return Effect.runPromise(effect);
 }
 
