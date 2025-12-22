@@ -1,40 +1,7 @@
-import type { CreateIndexStatement } from '@databases/sqlite-ast';
-import { logger } from '../../../logger';
+import type { CreateIndexStatement, SelectStatement } from '@databases/sqlite-ast';
 import type { QueryResult, QueryHandlerContext } from '../types';
 import type { IndexJob } from '../../queue/types';
-
-/**
- * Get table topology information
- */
-async function getTableTopologyInfo(
-	context: QueryHandlerContext,
-	tableName: string,
-): Promise<{
-	tableMetadata: any;
-	tableShards: Array<{ table_name: string; shard_id: number; node_id: string }>;
-}> {
-	const { databaseId, topology } = context;
-
-	// Get topology information
-	const topologyId = topology.idFromName(databaseId);
-	const topologyStub = topology.get(topologyId);
-	const topologyData = await topologyStub.getTopology();
-
-	// Find the table metadata
-	const tableMetadata = topologyData.tables.find((t) => t.table_name === tableName);
-	if (!tableMetadata) {
-		throw new Error(`Table '${tableName}' not found in topology`);
-	}
-
-	// Get table shards for this table
-	const tableShards = topologyData.table_shards.filter((s) => s.table_name === tableName);
-
-	if (tableShards.length === 0) {
-		throw new Error(`No shards found for table '${tableName}'`);
-	}
-
-	return { tableMetadata, tableShards };
-}
+import { getCachedQueryPlanData } from '../utils/write';
 
 /**
  * Enqueue an index job to the queue
@@ -111,8 +78,17 @@ export async function handleCreateIndex(statement: CreateIndexStatement, context
 	const topologyId = topology.idFromName(databaseId);
 	const topologyStub = topology.get(topologyId);
 
-	// Get all shards for this table to create SQLite indexes
-	const { tableShards } = await getTableTopologyInfo(context, tableName);
+	// Use getCachedQueryPlanData to get active shards (same as CRUD operations)
+	// This ensures consistent handling of shard status filtering
+	const dummySelect = {
+		type: 'SelectStatement',
+		select: [{ type: 'SelectClause', expression: { type: 'Identifier', name: '*' } }],
+		from: { type: 'Identifier', name: tableName },
+	} as SelectStatement;
+	const { planData } = await getCachedQueryPlanData(context, tableName, dummySelect, []);
+
+	// Dedupe by node_id - SQLite index only needs to be created once per storage node
+	const uniqueNodeIds = [...new Set(planData.shardsToQuery.map(s => s.node_id))];
 
 	// Build the CREATE INDEX SQL statement
 	const uniqueClause = statement.unique ? 'UNIQUE ' : '';
@@ -120,11 +96,11 @@ export async function handleCreateIndex(statement: CreateIndexStatement, context
 	const columnList = columns.join(', ');
 	const createIndexSQL = `CREATE ${uniqueClause}INDEX ${ifNotExistsClause}${indexName} ON ${tableName}(${columnList})`;
 
-	// Create SQLite indexes on all storage shards in parallel
+	// Create SQLite indexes on each unique storage node in parallel
 	// This ensures queries on individual shards are fast (reduces rows scanned)
 	await Promise.all(
-		tableShards.map(async (shard) => {
-			const storageId = storage.idFromName(shard.node_id);
+		uniqueNodeIds.map(async (nodeId) => {
+			const storageId = storage.idFromName(nodeId);
 			const storageStub = storage.get(storageId);
 
 			try {
