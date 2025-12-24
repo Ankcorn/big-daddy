@@ -1,14 +1,18 @@
-import { DurableObject } from 'cloudflare:workers';
-import { logger } from '../logger';
+import { DurableObject } from "cloudflare:workers";
+import { logger } from "../logger";
 
 // Type definitions for Storage operations
 
-export interface QueryResult<T = Record<string, any>> {
+/** SQL parameter type for query bindings */
+export type SqlParam = string | number | boolean | null;
+
+export interface QueryResult<T = Record<string, unknown>> {
 	rows: T[];
 	rowsAffected?: number;
+	error?: string; // Error message if query failed
 }
 
-export interface BatchQueryResult<T = Record<string, any>> {
+export interface BatchQueryResult<T = Record<string, unknown>> {
 	results: QueryResult<T>[];
 	totalRowsAffected: number;
 }
@@ -21,32 +25,24 @@ export type StorageResults<T> = QueryResult<T>;
 
 export interface QueryBatch {
 	query: string;
-	params?: any[];
+	params?: SqlParam[];
 	correlationId?: string; // Optional correlation ID for tracing
 }
 
 /** Storage Durable Object - individual database shard */
 export class Storage extends DurableObject<Env> {
 	/**
-	 * The constructor is invoked once upon creation of the Durable Object
-	 *
-	 * @param ctx - The interface for interacting with Durable Object state
-	 * @param env - The interface to reference bindings declared in wrangler.jsonc
-	 */
-	constructor(ctx: DurableObjectState, env: Env) {
-		super(ctx, env);
-	}
-
-	/**
 	 * Execute a query or batch of queries on this storage shard
 	 *
 	 * @param queries - Single query or array of queries to execute
 	 * @returns Query results with rows and metadata (single or batch)
 	 */
-	async executeQuery(queries: QueryBatch | QueryBatch[]): Promise<QueryResult | BatchQueryResult> {
-		const source = 'Storage';
-		const component = 'Storage';
-		const operation = 'executeQuery';
+	async executeQuery(
+		queries: QueryBatch | QueryBatch[],
+	): Promise<QueryResult | BatchQueryResult> {
+		const source = "Storage";
+		const component = "Storage";
+		const operation = "executeQuery";
 		const queryArray = Array.isArray(queries) ? queries : [queries];
 		const isBatch = Array.isArray(queries);
 		const correlationId = queryArray[0]?.correlationId;
@@ -54,7 +50,7 @@ export class Storage extends DurableObject<Env> {
 		const queryCount = queryArray.length;
 
 		const startTime = Date.now();
-		logger.debug`Executing storage query ${{source}} ${{component}} ${{operation}} ${{correlationId}} ${{requestId: correlationId}} ${{shardId}} ${{queryCount}} ${{isBatch}}`;
+		logger.debug`Executing storage query ${{ source }} ${{ component }} ${{ operation }} ${{ correlationId }} ${{ requestId: correlationId }} ${{ shardId }} ${{ queryCount }} ${{ isBatch }}`;
 
 		const results: QueryResult[] = [];
 		let totalRowsAffected = 0;
@@ -62,13 +58,16 @@ export class Storage extends DurableObject<Env> {
 		try {
 			for (const batch of queryArray) {
 				const queryStartTime = Date.now();
-				const result = this.ctx.storage.sql.exec(batch.query, ...(batch.params ?? []));
-				const rows = result.toArray() as unknown as Record<string, any>[];
+				const result = this.ctx.storage.sql.exec(
+					batch.query,
+					...(batch.params ?? []),
+				);
+				const rows = result.toArray() as unknown as Record<string, unknown>[];
 				const rowsAffected = result.rowsWritten ?? 0;
 
 				const rowCount = rows.length;
 				const duration = Date.now() - queryStartTime;
-				logger.debug`Query executed on shard ${{source}} ${{component}} ${{shardId}} ${{rowCount}} ${{rowsAffected}} ${{duration}}`;
+				logger.debug`Query executed on shard ${{ source }} ${{ component }} ${{ shardId }} ${{ rowCount }} ${{ rowsAffected }} ${{ duration }}`;
 
 				results.push({
 					rows,
@@ -79,8 +78,8 @@ export class Storage extends DurableObject<Env> {
 			}
 
 			const finalDuration = Date.now() - startTime;
-			const status = 'success';
-			logger.info`Storage query completed successfully ${{source}} ${{component}} ${{shardId}} ${{duration: finalDuration}} ${{queryCount}} ${{totalRowsAffected}} ${{status}}`;
+			const status = "success";
+			logger.info`Storage query completed successfully ${{ source }} ${{ component }} ${{ shardId }} ${{ duration: finalDuration }} ${{ queryCount }} ${{ totalRowsAffected }} ${{ status }}`;
 
 			// Return single result if input was a single query, batch result otherwise
 			if (!isBatch) {
@@ -94,9 +93,15 @@ export class Storage extends DurableObject<Env> {
 		} catch (error) {
 			const errorDuration = Date.now() - startTime;
 			const errorMsg = error instanceof Error ? error.message : String(error);
-			const status = 'failure';
-			logger.error`Storage query failed ${{source}} ${{component}} ${{shardId}} ${{duration: errorDuration}} ${{queryCount}} ${{error: errorMsg}} ${{status}}`;
-			throw error;
+			const status = "failure";
+			logger.error`Storage query failed ${{ source }} ${{ component }} ${{ shardId }} ${{ duration: errorDuration }} ${{ queryCount }} ${{ error: errorMsg }} ${{ status }}`;
+			// Return error in response instead of throwing to preserve message across RPC boundary
+			// Durable Object RPC sanitizes error messages for security reasons
+			return {
+				rows: [],
+				rowsAffected: 0,
+				error: errorMsg,
+			};
 		}
 	}
 
@@ -127,7 +132,7 @@ export class Storage extends DurableObject<Env> {
 	 * @param bookmark - Bookmark identifier to reset to
 	 * @returns Success status
 	 */
-	async resetToBookmark(bookmark: string): Promise<{ success: boolean }> {
+	async resetToBookmark(_bookmark: string): Promise<{ success: boolean }> {
 		// Note: Actual point-in-time recovery API may differ
 		// This is a placeholder implementation
 		// You may need to use backup/restore mechanisms instead

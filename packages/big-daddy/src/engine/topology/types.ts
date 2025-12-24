@@ -5,13 +5,13 @@
  * including storage nodes, tables, shards, virtual indexes, and async jobs.
  */
 
-export type { SqlParam } from '../conductor/types';
+export type { SqlParam } from "../conductor/types";
 
 export interface StorageNode {
 	node_id: string;
 	created_at: number;
 	updated_at: number;
-	status: 'active' | 'down' | 'draining';
+	status: "active" | "down" | "draining";
 	capacity_used: number;
 	error: string | null;
 }
@@ -20,7 +20,7 @@ export interface TableMetadata {
 	table_name: string;
 	primary_key: string;
 	primary_key_type: string;
-	shard_strategy: 'hash' | 'range';
+	shard_strategy: "hash" | "range";
 	shard_key: string;
 	num_shards: number;
 	block_size: number;
@@ -32,7 +32,7 @@ export interface TableShard {
 	table_name: string;
 	shard_id: number;
 	node_id: string;
-	status: 'active' | 'pending' | 'to_be_deleted' | 'failed';
+	status: "active" | "pending" | "to_be_deleted" | "failed";
 	created_at: number;
 	updated_at: number;
 }
@@ -46,19 +46,25 @@ export interface ReshardingState {
 	source_shard_id: number;
 	target_shard_ids: string; // Stored as JSON array
 	change_log_id: string;
-	status: 'pending_shards' | 'copying' | 'replaying' | 'verifying' | 'complete' | 'failed';
+	status:
+		| "pending_shards"
+		| "copying"
+		| "replaying"
+		| "verifying"
+		| "complete"
+		| "failed";
 	error_message: string | null;
 	created_at: number;
 	updated_at: number;
 }
 
-export type IndexStatus = 'building' | 'ready' | 'failed' | 'rebuilding';
+export type IndexStatus = "building" | "ready" | "failed" | "rebuilding";
 
 export interface VirtualIndex {
 	index_name: string;
 	table_name: string;
 	columns: string; // Stored as JSON array of column names for composite indexes
-	index_type: 'hash' | 'unique';
+	index_type: "hash" | "unique";
 	status: IndexStatus;
 	error_message: string | null;
 	created_at: number;
@@ -77,9 +83,9 @@ export interface VirtualIndexEntry {
  */
 export interface AsyncJob {
 	job_id: string;
-	job_type: 'reshard_table' | 'build_index' | 'maintain_index';
+	job_type: "reshard_table" | "build_index" | "maintain_index";
 	table_name: string;
-	status: 'pending' | 'running' | 'completed' | 'failed';
+	status: "pending" | "running" | "completed" | "failed";
 	error_message: string | null;
 	started_at: number;
 	ended_at: number | null;
@@ -101,7 +107,7 @@ export interface TopologyData {
 
 export interface StorageNodeUpdate {
 	node_id: string;
-	status?: 'active' | 'down' | 'draining';
+	status?: "active" | "down" | "draining";
 	capacity_used?: number;
 	error?: string | null;
 }
@@ -116,14 +122,23 @@ export interface TopologyUpdates {
 	// Storage nodes are immutable
 	storage_nodes?: never;
 	tables?: {
-		add?: Omit<TableMetadata, 'created_at' | 'updated_at'>[];
+		add?: Omit<TableMetadata, "created_at" | "updated_at">[];
 		update?: TableMetadataUpdate[];
 		remove?: string[];
 	};
 }
 
 export interface QueryPlanData {
-	shardsToQuery: Array<{ table_name: string; shard_id: number; node_id: string }>;
-	virtualIndexes: Array<{ table_name: string; index_name: string; columns: string; index_type: 'hash' | 'unique' }>;
+	shardsToQuery: Array<{
+		table_name: string;
+		shard_id: number;
+		node_id: string;
+	}>;
+	virtualIndexes: Array<{
+		table_name: string;
+		index_name: string;
+		columns: string;
+		index_type: "hash" | "unique";
+	}>;
 	shardKey: string;
 }

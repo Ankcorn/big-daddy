@@ -1,9 +1,9 @@
-import type { SelectStatement } from '@databases/sqlite-ast';
-import { logger } from '../../../logger';
-import { extractTableName as extractTableNameFromAST } from '../../utils/ast-utils';
-import type { QueryResult, QueryHandlerContext } from '../types';
-import { mergeResultsSimple } from '../utils';
-import { getCachedQueryPlanData, executeOnShards } from '../utils/write';
+import type { SelectStatement } from "@databases/sqlite-ast";
+import { logger } from "../../../logger";
+import { extractTableName as extractTableNameFromAST } from "../../utils/ast-utils";
+import type { QueryHandlerContext, QueryResult, SqlParam } from "../types";
+import { mergeResultsSimple } from "../utils";
+import { executeOnShards, getCachedQueryPlanData } from "../utils/write";
 
 /**
  * Execute a SELECT query on the appropriate shards
@@ -16,15 +16,15 @@ import { getCachedQueryPlanData, executeOnShards } from '../utils/write';
  */
 export async function handleSelect(
 	statement: SelectStatement,
-	query: string,
-	params: any[],
+	_query: string,
+	params: SqlParam[],
 	context: QueryHandlerContext,
 ): Promise<QueryResult> {
-	const { databaseId, storage, topology, cache, correlationId } = context;
+	const { cache } = context;
 	const tableName = extractTableNameFromAST(statement);
 
 	if (!tableName) {
-		throw new Error('Could not determine table name from SELECT query');
+		throw new Error("Could not determine table name from SELECT query");
 	}
 
 	// STEP 1: Get cached query plan data
@@ -36,12 +36,17 @@ export async function handleSelect(
 		params,
 	);
 
-	logger.info`Query plan determined for SELECT ${{cacheHit}} ${{shardsSelected: planData.shardsToQuery.length}} ${{indexesUsed: planData.virtualIndexes.length}}`;
+	logger.info`Query plan determined for SELECT ${{ cacheHit }} ${{ shardsSelected: planData.shardsToQuery.length }} ${{ indexesUsed: planData.virtualIndexes.length }}`;
 
 	const shardsToQuery = planData.shardsToQuery;
 
 	// STEP 2: Execute query on all target shards in parallel
-	const { results, shardStats } = await executeOnShards(context, shardsToQuery, statement, params);
+	const { results, shardStats } = await executeOnShards(
+		context,
+		shardsToQuery,
+		statement,
+		params,
+	);
 
 	// STEP 3: Merge results from all shards
 	const result = mergeResultsSimple(results, statement);
@@ -58,7 +63,7 @@ export async function handleSelect(
 	// Add shard statistics
 	result.shardStats = shardStats;
 
-	logger.info`SELECT query completed ${{shardsQueried: shardsToQuery.length}} ${{rowCount: result.rows.length}}`;
+	logger.info`SELECT query completed ${{ shardsQueried: shardsToQuery.length }} ${{ rowCount: result.rows.length }}`;
 
 	return result;
 }

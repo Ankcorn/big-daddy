@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { env } from 'cloudflare:test';
-import { createConnection } from '../../src/index';
-import { processBuildIndexJob } from '../../src/engine/async-jobs/build-index';
-import type { IndexBuildJob } from '../../src/engine/queue/types';
+import { env } from "cloudflare:test";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { processBuildIndexJob } from "../../src/engine/async-jobs/build-index";
+import type { IndexBuildJob, IndexJob } from "../../src/engine/queue/types";
+import { createConnection } from "../../src/index";
 
 /**
  * DELETE with Index Maintenance Tests
@@ -14,18 +14,18 @@ import type { IndexBuildJob } from '../../src/engine/queue/types';
  */
 
 // Store all queue messages for inspection in tests
-let capturedQueueMessages: any[] = [];
+let capturedQueueMessages: (IndexJob & { _processed?: boolean })[] = [];
 
 // Save original queue.send to restore later
 const originalQueueSend = env.INDEX_QUEUE.send.bind(env.INDEX_QUEUE);
 
-describe('DELETE with Index Maintenance', () => {
+describe("DELETE with Index Maintenance", () => {
 	beforeEach(() => {
 		// Clear captured messages before each test
 		capturedQueueMessages = [];
 		// Intercept queue.send to capture calls WITHOUT calling original
 		// This prevents async background processing that breaks test isolation
-		env.INDEX_QUEUE.send = async (message: any) => {
+		env.INDEX_QUEUE.send = async (message: IndexJob) => {
 			capturedQueueMessages.push(message);
 			// Don't call original - we'll process manually to avoid async race conditions
 		};
@@ -44,8 +44,8 @@ describe('DELETE with Index Maintenance', () => {
 		while (processed) {
 			processed = false;
 			for (let i = capturedQueueMessages.length - 1; i >= 0; i--) {
-				const msg = capturedQueueMessages[i];
-				if (msg.type === 'build_index' && !msg._processed) {
+				const msg = capturedQueueMessages[i]!;
+				if (msg.type === "build_index" && !msg._processed) {
 					// Mark as processed to avoid infinite loop
 					msg._processed = true;
 					await processBuildIndexJob(msg as IndexBuildJob, env);
@@ -64,8 +64,8 @@ describe('DELETE with Index Maintenance', () => {
 		return topology.virtual_index_entries;
 	}
 
-	it('should remove index entries synchronously when deleting rows', async () => {
-		const dbId = 'test-delete-with-index';
+	it("should remove index entries synchronously when deleting rows", async () => {
+		const dbId = "test-delete-with-index";
 		const sql = await createConnection(dbId, { nodes: 2 }, env);
 
 		// Create table with indexed column
@@ -82,9 +82,9 @@ describe('DELETE with Index Maintenance', () => {
 		await processPendingIndexBuilds();
 
 		// Insert rows - this creates index entries
-		await sql`INSERT INTO users (id, email, name) VALUES (1, ${'alice@example.com'}, ${'Alice'})`;
-		await sql`INSERT INTO users (id, email, name) VALUES (2, ${'bob@example.com'}, ${'Bob'})`;
-		await sql`INSERT INTO users (id, email, name) VALUES (3, ${'charlie@example.com'}, ${'Charlie'})`;
+		await sql`INSERT INTO users (id, email, name) VALUES (1, ${"alice@example.com"}, ${"Alice"})`;
+		await sql`INSERT INTO users (id, email, name) VALUES (2, ${"bob@example.com"}, ${"Bob"})`;
+		await sql`INSERT INTO users (id, email, name) VALUES (3, ${"charlie@example.com"}, ${"Charlie"})`;
 
 		// Verify index entries exist
 		let entries = await getIndexEntries(dbId);
@@ -100,8 +100,8 @@ describe('DELETE with Index Maintenance', () => {
 		expect(entries.length).toBe(0);
 	});
 
-	it('should handle NULL values correctly (not index them) during DELETE', async () => {
-		const dbId = 'test-delete-nulls';
+	it("should handle NULL values correctly (not index them) during DELETE", async () => {
+		const dbId = "test-delete-nulls";
 		const sql = await createConnection(dbId, { nodes: 2 }, env);
 
 		// Create table
@@ -117,9 +117,9 @@ describe('DELETE with Index Maintenance', () => {
 		await processPendingIndexBuilds();
 
 		// Insert some rows with NULLs
-		await sql`INSERT INTO records (id, email) VALUES (1, ${'user1@example.com'})`;
+		await sql`INSERT INTO records (id, email) VALUES (1, ${"user1@example.com"})`;
 		await sql`INSERT INTO records (id, email) VALUES (2, ${null})`;
-		await sql`INSERT INTO records (id, email) VALUES (3, ${'user3@example.com'})`;
+		await sql`INSERT INTO records (id, email) VALUES (3, ${"user3@example.com"})`;
 		await sql`INSERT INTO records (id, email) VALUES (4, ${null})`;
 
 		// Verify only non-NULL values are indexed
@@ -134,8 +134,8 @@ describe('DELETE with Index Maintenance', () => {
 		expect(entries.length).toBe(0);
 	});
 
-	it('should handle multiple indexes on same table during DELETE', async () => {
-		const dbId = 'test-delete-multi-index';
+	it("should handle multiple indexes on same table during DELETE", async () => {
+		const dbId = "test-delete-multi-index";
 		const sql = await createConnection(dbId, { nodes: 2 }, env);
 
 		// Create table
@@ -153,8 +153,8 @@ describe('DELETE with Index Maintenance', () => {
 		await processPendingIndexBuilds();
 
 		// Insert rows
-		await sql`INSERT INTO users (id, email, username) VALUES (1, ${'alice@example.com'}, ${'alice'})`;
-		await sql`INSERT INTO users (id, email, username) VALUES (2, ${'bob@example.com'}, ${'bob'})`;
+		await sql`INSERT INTO users (id, email, username) VALUES (1, ${"alice@example.com"}, ${"alice"})`;
+		await sql`INSERT INTO users (id, email, username) VALUES (2, ${"bob@example.com"}, ${"bob"})`;
 
 		// Verify index entries exist for both indexes
 		let entries = await getIndexEntries(dbId);

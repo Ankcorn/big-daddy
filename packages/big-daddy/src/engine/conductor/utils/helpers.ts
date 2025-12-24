@@ -1,29 +1,33 @@
-import { parse, generate } from '@databases/sqlite-ast';
 import type {
-	SelectStatement,
-	UpdateStatement,
-	DeleteStatement,
-	CreateTableStatement,
 	BinaryExpression,
 	ColumnDefinition,
-	TableConstraint,
-	Statement,
-	InsertStatement,
-	Identifier,
+	CreateTableStatement,
+	DeleteStatement,
 	Expression,
+	Identifier,
+	InsertStatement,
 	Literal,
 	Placeholder,
-} from '@databases/sqlite-ast';
-import type { QueryResult, ShardStats, SqlParam } from '../types';
-import { logger } from '../../../logger';
+	SelectStatement,
+	Statement,
+	TableConstraint,
+	UpdateStatement,
+} from "@databases/sqlite-ast";
+import { generate } from "@databases/sqlite-ast";
+import { logger } from "../../../logger";
+import type { QueryResult, SqlParam } from "../types";
 
 export function injectVirtualShard(
-	statement: UpdateStatement | InsertStatement | DeleteStatement | SelectStatement,
+	statement:
+		| UpdateStatement
+		| InsertStatement
+		| DeleteStatement
+		| SelectStatement,
 	params: SqlParam[],
 	shardId: number,
-): { modifiedStatement: Statement; modifiedParams: any[] } {
+): { modifiedStatement: Statement; modifiedParams: SqlParam[] } {
 	try {
-		if (statement.type === 'InsertStatement') {
+		if (statement.type === "InsertStatement") {
 			// For INSERT, interleave shardId for each row
 			// SQL will be: VALUES (col1, col2, col3, _virtualShard), (col1, col2, col3, _virtualShard), ...
 			// So params must be: [val1, val2, val3, shardId, val4, val5, val6, shardId, ...]
@@ -37,8 +41,13 @@ export function injectVirtualShard(
 			for (const row of rows) {
 				// Add params for placeholders in this row (in order)
 				for (const expr of row) {
-					if (expr && typeof expr === 'object' && 'type' in expr && expr.type === 'Placeholder') {
-						interleavedParams.push(params[paramIndex]);
+					if (
+						expr &&
+						typeof expr === "object" &&
+						"type" in expr &&
+						expr.type === "Placeholder"
+					) {
+						interleavedParams.push(params[paramIndex]!);
 						paramIndex++;
 					}
 				}
@@ -54,9 +63,12 @@ export function injectVirtualShard(
 		const modifiedParams = [...params, shardId];
 		const modifiedStatement = injectWhereFilter(statement, params);
 
-		return { modifiedStatement: modifiedStatement || statement, modifiedParams };
+		return {
+			modifiedStatement: modifiedStatement || statement,
+			modifiedParams,
+		};
 	} catch (error) {
-		logger.warn`Failed to inject _virtualShard filter, using original statement ${{error: error instanceof Error ? error.message : String(error)}}`;
+		logger.warn`Failed to inject _virtualShard filter, using original statement ${{ error: error instanceof Error ? error.message : String(error) }}`;
 		return { modifiedStatement: statement, modifiedParams: params };
 	}
 }
@@ -65,10 +77,14 @@ export function injectVirtualShard(
  *
  * Inject virtual shard column on insert
  */
-function insertColumn(stmt: InsertStatement, params: SqlParam[], shardId: number): InsertStatement {
+function insertColumn(
+	stmt: InsertStatement,
+	params: SqlParam[],
+	_shardId: number,
+): InsertStatement {
 	const virtualShardIdentifier: Identifier = {
-		type: 'Identifier',
-		name: '_virtualShard',
+		type: "Identifier",
+		name: "_virtualShard",
 	};
 
 	// For multi-row inserts, each row needs its own _virtualShard parameter
@@ -77,33 +93,44 @@ function insertColumn(stmt: InsertStatement, params: SqlParam[], shardId: number
 
 	return {
 		...stmt,
-		columns: stmt.columns ? [...stmt.columns, virtualShardIdentifier] : [virtualShardIdentifier],
+		columns: stmt.columns
+			? [...stmt.columns, virtualShardIdentifier]
+			: [virtualShardIdentifier],
 		values: stmt.values
 			? stmt.values.map((values) => {
-					const rowWithShard = [...values, { type: 'Placeholder', parameterIndex: paramIndex } as Placeholder];
+					const rowWithShard = [
+						...values,
+						{ type: "Placeholder", parameterIndex: paramIndex } as Placeholder,
+					];
 					paramIndex++;
 					return rowWithShard;
 				})
-			: [[{ type: 'Placeholder', parameterIndex: params.length } as Placeholder]],
+			: [
+					[
+						{
+							type: "Placeholder",
+							parameterIndex: params.length,
+						} as Placeholder,
+					],
+				],
 	};
 }
 
 /**
  * Inject _virtualShard filter into a SELECT statement using AST manipulation
  */
-function injectWhereFilter<TStatement extends DeleteStatement | SelectStatement | UpdateStatement>(
-	stmt: TStatement,
-	params: SqlParam[],
-): TStatement {
+function injectWhereFilter<
+	TStatement extends DeleteStatement | SelectStatement | UpdateStatement,
+>(stmt: TStatement, params: SqlParam[]): TStatement {
 	const virtualShardFilter: BinaryExpression = {
-		type: 'BinaryExpression',
-		operator: '=',
+		type: "BinaryExpression",
+		operator: "=",
 		left: {
-			type: 'Identifier',
-			name: '_virtualShard',
+			type: "Identifier",
+			name: "_virtualShard",
 		},
 		right: {
-			type: 'Placeholder',
+			type: "Placeholder",
 			parameterIndex: params.length,
 		},
 	};
@@ -112,8 +139,8 @@ function injectWhereFilter<TStatement extends DeleteStatement | SelectStatement 
 		return {
 			...stmt,
 			where: {
-				type: 'BinaryExpression',
-				operator: 'AND',
+				type: "BinaryExpression",
+				operator: "AND",
 				left: stmt.where,
 				right: virtualShardFilter,
 			},
@@ -137,16 +164,22 @@ function injectWhereFilter<TStatement extends DeleteStatement | SelectStatement 
  * This allows the same primary key value to exist on multiple shards within
  * the same physical storage node, which is critical for resharding operations.
  */
-export function injectVirtualShardColumn(statement: CreateTableStatement): string {
-	const modifiedStatement = JSON.parse(JSON.stringify(statement)) as CreateTableStatement;
+export function injectVirtualShardColumn(
+	statement: CreateTableStatement,
+): string {
+	const modifiedStatement = JSON.parse(
+		JSON.stringify(statement),
+	) as CreateTableStatement;
 
 	// Track primary key columns
 	const primaryKeyColumns: string[] = [];
 
 	// Check for column-level PRIMARY KEY constraint
 	for (let i = 0; i < modifiedStatement.columns.length; i++) {
-		const col = modifiedStatement.columns[i];
-		const pkConstraintIndex = col.constraints?.findIndex((c) => c.constraint === 'PRIMARY KEY');
+		const col = modifiedStatement.columns[i]!;
+		const pkConstraintIndex = col.constraints?.findIndex(
+			(c) => c.constraint === "PRIMARY KEY",
+		);
 
 		if (pkConstraintIndex !== undefined && pkConstraintIndex >= 0) {
 			// Found column-level PRIMARY KEY
@@ -160,10 +193,12 @@ export function injectVirtualShardColumn(statement: CreateTableStatement): strin
 
 	// Check for table-level PRIMARY KEY constraint
 	if (modifiedStatement.constraints) {
-		const pkConstraintIndex = modifiedStatement.constraints.findIndex((c) => c.constraint === 'PRIMARY KEY');
+		const pkConstraintIndex = modifiedStatement.constraints.findIndex(
+			(c) => c.constraint === "PRIMARY KEY",
+		);
 
 		if (pkConstraintIndex >= 0) {
-			const pkConstraint = modifiedStatement.constraints[pkConstraintIndex];
+			const pkConstraint = modifiedStatement.constraints[pkConstraintIndex]!;
 
 			// Extract column names from the table-level PRIMARY KEY
 			if (pkConstraint.columns) {
@@ -177,24 +212,24 @@ export function injectVirtualShardColumn(statement: CreateTableStatement): strin
 
 	// Add _virtualShard column at the end
 	const virtualShardColumn: ColumnDefinition = {
-		type: 'ColumnDefinition',
+		type: "ColumnDefinition",
 		name: {
-			type: 'Identifier',
-			name: '_virtualShard',
+			type: "Identifier",
+			name: "_virtualShard",
 		},
-		dataType: 'INTEGER',
+		dataType: "INTEGER",
 		constraints: [
 			{
-				type: 'ColumnConstraint',
-				constraint: 'NOT NULL',
+				type: "ColumnConstraint",
+				constraint: "NOT NULL",
 			},
 			{
-				type: 'ColumnConstraint',
-				constraint: 'DEFAULT',
+				type: "ColumnConstraint",
+				constraint: "DEFAULT",
 				value: {
-					type: 'Literal',
+					type: "Literal",
 					value: 0,
-					raw: '0',
+					raw: "0",
 				},
 			},
 		],
@@ -206,9 +241,15 @@ export function injectVirtualShardColumn(statement: CreateTableStatement): strin
 	// Create composite PRIMARY KEY constraint with _virtualShard prepended
 	if (primaryKeyColumns.length > 0) {
 		const compositePKConstraint: TableConstraint = {
-			type: 'TableConstraint',
-			constraint: 'PRIMARY KEY',
-			columns: [{ type: 'Identifier', name: '_virtualShard' }, ...primaryKeyColumns.map((name) => ({ type: 'Identifier' as const, name }))],
+			type: "TableConstraint",
+			constraint: "PRIMARY KEY",
+			columns: [
+				{ type: "Identifier", name: "_virtualShard" },
+				...primaryKeyColumns.map((name) => ({
+					type: "Identifier" as const,
+					name,
+				})),
+			],
 		};
 
 		// Add or initialize constraints array
@@ -225,65 +266,69 @@ export function injectVirtualShardColumn(statement: CreateTableStatement): strin
 /**
  * Check if a statement is a SELECT statement
  */
-function isSelectStatement(statement: any): statement is SelectStatement {
-	return statement?.type === 'SelectStatement';
+function isSelectStatement(statement: Statement): statement is SelectStatement {
+	return statement?.type === "SelectStatement";
 }
 
 /**
  * Check if an expression is an aggregation function
  */
-function isAggregationFunction(expr: any): boolean {
-	if (expr?.type !== 'FunctionCall') return false;
-	const funcName = (expr.name || '').toUpperCase();
-	return ['COUNT', 'SUM', 'AVG', 'MIN', 'MAX'].includes(funcName);
+function isAggregationFunction(expr: Expression | undefined): boolean {
+	if (!expr || expr.type !== "FunctionCall") return false;
+	const funcName = ((expr as { name?: string }).name || "").toUpperCase();
+	return ["COUNT", "SUM", "AVG", "MIN", "MAX"].includes(funcName);
 }
 
 /**
  * Reconstruct argument list from FunctionCall AST
  */
-function reconstructArguments(args: any): string {
-	if (!args) {
-		return '';
+function reconstructArguments(args: unknown[] | undefined): string {
+	if (!args || !Array.isArray(args)) {
+		return "";
 	}
-	// Handle case where args is not an array
-	const argArray = Array.isArray(args) ? args : [];
-	if (argArray.length === 0) {
-		return '';
+	if (args.length === 0) {
+		return "";
 	}
 
-	return argArray
+	return args
 		.map((arg) => {
-			if (!arg || typeof arg !== 'object') {
+			if (!arg || typeof arg !== "object") {
 				return String(arg);
 			}
-			if (arg.type === 'AllColumns') {
-				return '*';
-			} else if (arg.type === 'Identifier') {
-				const name = arg.name || 'col';
-				return String(name);
-			} else if (arg.type === 'Literal') {
-				return String(arg.value);
+			const argObj = arg as { type?: string; name?: string; value?: unknown };
+			if (argObj.type === "AllColumns") {
+				return "*";
+			} else if (argObj.type === "Identifier") {
+				return String(argObj.name || "col");
+			} else if (argObj.type === "Literal") {
+				return String(argObj.value);
 			}
 			// For unknown types, try to extract name
-			if (typeof arg.name === 'string') {
-				return arg.name;
+			if (typeof argObj.name === "string") {
+				return argObj.name;
 			}
-			return 'arg';
+			return "arg";
 		})
-		.join(', ');
+		.join(", ");
 }
 
 /**
  * Get column name or alias from a select clause
  */
-function getColumnName(selectClause: any): string {
+function getColumnName(selectClause: {
+	alias?: string | { name: string };
+	expression?: { type?: string; name?: string; args?: unknown[] };
+}): string {
 	if (selectClause.alias) {
-		return selectClause.alias;
+		// alias can be a string or an Identifier object with a name property
+		return typeof selectClause.alias === "string"
+			? selectClause.alias
+			: selectClause.alias.name;
 	}
-	if (selectClause.expression?.type === 'FunctionCall') {
+	if (selectClause.expression?.type === "FunctionCall") {
 		// For function calls like COUNT(*), COUNT(name), etc., reconstruct the full function call
 		// so we get the actual column name that SQLite returns
-		const funcName = selectClause.expression.name || 'FUNC';
+		const funcName = selectClause.expression.name || "FUNC";
 		const args = selectClause.expression.args || [];
 		const argString = reconstructArguments(args);
 		return `${funcName}(${argString})`;
@@ -291,7 +336,7 @@ function getColumnName(selectClause: any): string {
 	if (selectClause.expression?.name) {
 		return selectClause.expression.name;
 	}
-	return 'result';
+	return "result";
 }
 
 /**
@@ -299,15 +344,20 @@ function getColumnName(selectClause: any): string {
  */
 function hasAggregations(statement: SelectStatement): boolean {
 	if (!statement.select || !Array.isArray(statement.select)) return false;
-	return statement.select.some((col: any) => isAggregationFunction(col.expression));
+	return statement.select.some((col: { expression?: Expression }) =>
+		isAggregationFunction(col.expression),
+	);
 }
 
 /**
  * Merge aggregation results from multiple shards
  */
-function mergeAggregations(results: QueryResult[], statement: SelectStatement): any[] {
+function mergeAggregations(
+	results: QueryResult[],
+	statement: SelectStatement,
+): Record<string, unknown>[] {
 	if (results.length === 0) return [];
-	if (results.length === 1) return results[0].rows;
+	if (results.length === 1) return results[0]!.rows;
 
 	// Collect all rows from shards
 	const allRows = results.flatMap((r) => r.rows);
@@ -320,13 +370,11 @@ function mergeAggregations(results: QueryResult[], statement: SelectStatement): 
 	const selectCols = statement.select || [];
 
 	// Build merged row with aggregation logic
-	const mergedRow: any = {};
+	const mergedRow: Record<string, unknown> = {};
 
 	for (let i = 0; i < selectCols.length; i++) {
-		const col = selectCols[i];
-		let colName = getColumnName(col);
-
-		colName = typeof colName === 'string' ? colName : colName.name;
+		const col = selectCols[i]!;
+		const colName = getColumnName(col);
 		const expr = col.expression;
 
 		// Try to find the actual column name in the returned rows
@@ -339,48 +387,61 @@ function mergeAggregations(results: QueryResult[], statement: SelectStatement): 
 				actualColName = lowerColName;
 			} else {
 				// Try to find a column that starts with the function name (case-insensitive)
-				const funcName = expr?.type === 'FunctionCall' ? (expr.name || '').toLowerCase() : '';
-				const matchingCol = actualColumnNames.find((c) => c.toLowerCase().startsWith(funcName));
+				const funcName =
+					expr?.type === "FunctionCall" ? (expr.name || "").toLowerCase() : "";
+				const matchingCol = actualColumnNames.find((c) =>
+					c.toLowerCase().startsWith(funcName),
+				);
 				if (matchingCol) {
 					actualColName = matchingCol;
 				}
 			}
 		}
 
-		if (expr?.type === 'FunctionCall') {
-			const funcName = (expr.name || '').toUpperCase();
+		if (expr?.type === "FunctionCall") {
+			const funcName = (expr.name || "").toUpperCase();
 
-			if (funcName === 'COUNT') {
+			if (funcName === "COUNT") {
 				// SUM all count values
 				const countValue = allRows.reduce((sum, row) => {
-					const val = row[actualColName] || 0;
+					const val = Number(row[actualColName]) || 0;
 					return sum + val;
 				}, 0);
 				mergedRow[colName] = countValue;
-			} else if (funcName === 'SUM') {
+			} else if (funcName === "SUM") {
 				// SUM all sum values
-				mergedRow[colName] = allRows.reduce((sum, row) => sum + (row[actualColName] || 0), 0);
-			} else if (funcName === 'MIN') {
+				mergedRow[colName] = allRows.reduce(
+					(sum, row) => sum + (Number(row[actualColName]) || 0),
+					0,
+				);
+			} else if (funcName === "MIN") {
 				// Take minimum of all values
-				const values = allRows.map((row) => row[actualColName]).filter((v) => v != null);
+				const values = allRows
+					.map((row) => row[actualColName])
+					.filter((v): v is number => v != null && typeof v === "number");
 				mergedRow[colName] = values.length > 0 ? Math.min(...values) : null;
-			} else if (funcName === 'MAX') {
+			} else if (funcName === "MAX") {
 				// Take maximum of all values
-				const values = allRows.map((row) => row[actualColName]).filter((v) => v != null);
+				const values = allRows
+					.map((row) => row[actualColName])
+					.filter((v): v is number => v != null && typeof v === "number");
 				mergedRow[colName] = values.length > 0 ? Math.max(...values) : null;
-			} else if (funcName === 'AVG') {
+			} else if (funcName === "AVG") {
 				// For AVG, we need to recalculate
 				// Ideally we'd have SUM and COUNT separately, but as a fallback average the averages
-				const values = allRows.map((row) => row[actualColName]).filter((v) => v != null);
+				const values = allRows
+					.map((row) => row[actualColName])
+					.filter((v): v is number => v != null && typeof v === "number");
 				if (values.length > 0) {
-					mergedRow[colName] = values.reduce((a, b) => a + b, 0) / values.length;
+					mergedRow[colName] =
+						values.reduce((a, b) => a + b, 0) / values.length;
 				} else {
 					mergedRow[colName] = null;
 				}
 			}
 		} else {
 			// Non-aggregated column - use first value (for GROUP BY scenarios)
-			mergedRow[colName] = allRows[0][actualColName];
+			mergedRow[colName] = allRows[0]?.[actualColName];
 		}
 	}
 
@@ -393,7 +454,11 @@ function mergeAggregations(results: QueryResult[], statement: SelectStatement): 
  */
 export function mergeResultsSimple(
 	results: QueryResult[],
-	statement: SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
+	statement:
+		| SelectStatement
+		| InsertStatement
+		| UpdateStatement
+		| DeleteStatement,
 ): QueryResult {
 	if (isSelectStatement(statement)) {
 		// Check if this SELECT has aggregation functions
@@ -410,8 +475,7 @@ export function mergeResultsSimple(
 
 		// Strip _virtualShard from result rows (hidden column should not be visible to user)
 		const cleanedRows = mergedRows.map((row) => {
-			const cleaned = { ...row };
-			delete (cleaned as any)._virtualShard;
+			const { _virtualShard: _, ...cleaned } = row as Record<string, unknown>;
 			return cleaned;
 		});
 
@@ -421,7 +485,10 @@ export function mergeResultsSimple(
 		};
 	} else {
 		// For INSERT/UPDATE/DELETE, sum the rowsAffected
-		const totalAffected = results.reduce((sum, r) => sum + (r.rowsAffected || 0), 0);
+		const totalAffected = results.reduce(
+			(sum, r) => sum + (r.rowsAffected || 0),
+			0,
+		);
 		return {
 			rows: [],
 			rowsAffected: totalAffected,
@@ -434,11 +501,11 @@ export function mergeResultsSimple(
  */
 export function extractKeyValueFromRow(
 	columns: Array<{ name: string }>,
-	row: any[],
+	row: Expression[],
 	indexColumns: string[],
 	params: SqlParam[],
 ): string | null {
-	const values: any[] = [];
+	const values: SqlParam[] = [];
 
 	for (const colName of indexColumns) {
 		const columnIndex = columns.findIndex((col) => col.name === colName);
@@ -467,14 +534,17 @@ export function extractKeyValueFromRow(
 /**
  * Extract value from an expression node (for cache invalidation)
  */
-function extractValueFromExpression(expression: Expression, params: SqlParam[]): any {
+function extractValueFromExpression(
+	expression: Expression | undefined,
+	params: SqlParam[],
+): SqlParam {
 	if (!expression) {
 		return null;
 	}
-	if (expression.type === 'Literal') {
-		return (expression as Literal).value;
-	} else if (expression.type === 'Placeholder') {
-		return params[(expression as Placeholder).parameterIndex];
+	if (expression.type === "Literal") {
+		return (expression as Literal).value as SqlParam;
+	} else if (expression.type === "Placeholder") {
+		return params[(expression as Placeholder).parameterIndex]!;
 	}
 	return null;
 }
@@ -487,7 +557,7 @@ function extractValueFromExpression(expression: Expression, params: SqlParam[]):
  * @param numShards - Number of shards to distribute across
  * @returns Shard ID (0-based)
  */
-export function hashToShardId(value: any, numShards: number): number {
+export function hashToShardId(value: SqlParam, numShards: number): number {
 	const strValue = String(value);
 	let hash = 0;
 	for (let i = 0; i < strValue.length; i++) {

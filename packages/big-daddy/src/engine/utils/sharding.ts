@@ -2,6 +2,9 @@
  * Sharding utility functions
  */
 
+/** SQL parameter type for query bindings */
+type SqlParam = string | number | boolean | null;
+
 /**
  * Hash a value to a shard ID using a simple string hash
  *
@@ -9,7 +12,7 @@
  * @param numShards - The number of shards to distribute across
  * @returns The shard ID (0-indexed)
  */
-export function hashToShard(value: any, numShards: number): number {
+export function hashToShard(value: SqlParam, numShards: number): number {
 	// Simple hash function for MVP
 	// Convert value to string and use a basic hash
 	const str = String(value);

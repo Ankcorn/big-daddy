@@ -1,10 +1,18 @@
-import { Effect } from 'effect';
-import type { CreateTableStatement, DropTableStatement } from '@databases/sqlite-ast';
-import { logger } from '../../../logger';
-import { extractTableMetadata } from '../../utils/schema-utils';
-import { injectVirtualShardColumn } from '../utils';
-import type { QueryResult, QueryHandlerContext } from '../types';
-import { TableAlreadyExistsError, TopologyFetchError, TopologyUpdateError, StorageExecutionError } from '../types';
+import type {
+	CreateTableStatement,
+	DropTableStatement,
+} from "@databases/sqlite-ast";
+import { Effect } from "effect";
+import { logger } from "../../../logger";
+import { extractTableMetadata } from "../../utils/schema-utils";
+import type { QueryHandlerContext, QueryResult } from "../types";
+import {
+	StorageExecutionError,
+	TableAlreadyExistsError,
+	TopologyFetchError,
+	TopologyUpdateError,
+} from "../types";
+import { injectVirtualShardColumn } from "../utils";
 
 /**
  * Handle CREATE TABLE statement execution
@@ -31,12 +39,13 @@ export async function handleCreateTable(
 
 		const topologyData = yield* Effect.tryPromise({
 			try: () => topologyStub.getTopology(),
-			catch: (error) =>
-				new TopologyFetchError(databaseId, error),
+			catch: (error) => new TopologyFetchError(databaseId, error),
 		});
 
 		// Step 2: Check if table already exists
-		const existingTable = topologyData.tables.find((t) => t.table_name === tableName);
+		const existingTable = topologyData.tables.find(
+			(t) => t.table_name === tableName,
+		);
 
 		// If IF NOT EXISTS is specified and table exists, return early
 		if (statement.ifNotExists && existingTable) {
@@ -62,8 +71,7 @@ export async function handleCreateTable(
 						add: [metadata],
 					},
 				}),
-			catch: (error) =>
-				new TopologyUpdateError(tableName, error),
+			catch: (error) => new TopologyUpdateError(tableName, error),
 		});
 
 		// Step 5: Inject _virtualShard column and create composite primary key
@@ -76,16 +84,16 @@ export async function handleCreateTable(
 				const storageStub = storage.get(storageId);
 
 				return Effect.tryPromise({
-					try: async () =>
-						(await storageStub.executeQuery({
+					try: () =>
+						storageStub.executeQuery({
 							query: modifiedQuery,
 							params: [],
-						})) as any,
+						}),
 					catch: (error) =>
 						new StorageExecutionError(node.node_id, modifiedQuery, error),
 				});
 			}),
-			{ concurrency: 'unbounded' } // Execute in parallel
+			{ concurrency: "unbounded" }, // Execute in parallel
 		);
 
 		// Step 7: Return success result
@@ -101,20 +109,34 @@ export async function handleCreateTable(
 			Effect.catchAll((error) => {
 				// Convert typed errors to standard errors for backward compatibility
 				if (error instanceof TableAlreadyExistsError) {
-					return Effect.fail(new Error(`Table '${error.tableName}' already exists in topology`));
+					return Effect.fail(
+						new Error(`Table '${error.tableName}' already exists in topology`),
+					);
 				}
 				if (error instanceof TopologyFetchError) {
-					return Effect.fail(new Error(`Failed to fetch topology for database '${error.databaseId}'`));
+					return Effect.fail(
+						new Error(
+							`Failed to fetch topology for database '${error.databaseId}'`,
+						),
+					);
 				}
 				if (error instanceof TopologyUpdateError) {
-					return Effect.fail(new Error(`Failed to update topology for table '${error.tableName}'`));
+					return Effect.fail(
+						new Error(
+							`Failed to update topology for table '${error.tableName}'`,
+						),
+					);
 				}
 				if (error instanceof StorageExecutionError) {
-					return Effect.fail(new Error(`Failed to execute CREATE TABLE on node '${error.nodeId}'`));
+					return Effect.fail(
+						new Error(
+							`Failed to execute CREATE TABLE on node '${error.nodeId}'`,
+						),
+					);
 				}
 				return Effect.fail(error as Error);
-			})
-		)
+			}),
+		),
 	);
 }
 
@@ -142,12 +164,13 @@ export async function handleDropTable(
 
 		const topologyData = yield* Effect.tryPromise({
 			try: () => topologyStub.getTopology(),
-			catch: (error) =>
-				new TopologyFetchError(databaseId, error),
+			catch: (error) => new TopologyFetchError(databaseId, error),
 		});
 
 		// Step 2: Check if table exists
-		const existingTable = topologyData.tables.find((t) => t.table_name === tableName);
+		const existingTable = topologyData.tables.find(
+			(t) => t.table_name === tableName,
+		);
 
 		// If IF EXISTS is specified and table doesn't exist, return early
 		if (statement.ifExists && !existingTable) {
@@ -164,11 +187,13 @@ export async function handleDropTable(
 
 		// Step 3: Check for active resharding
 		const reshardingState = topologyData.resharding_states.find(
-			(s) => s.table_name === tableName && s.status === 'copying'
+			(s) => s.table_name === tableName && s.status === "copying",
 		);
 		if (reshardingState) {
 			return yield* Effect.fail(
-				new Error(`Cannot DROP table '${tableName}' while resharding is in progress`)
+				new Error(
+					`Cannot DROP table '${tableName}' while resharding is in progress`,
+				),
 			);
 		}
 
@@ -180,12 +205,13 @@ export async function handleDropTable(
 						remove: [tableName],
 					},
 				}),
-			catch: (error) =>
-				new TopologyUpdateError(tableName, error),
+			catch: (error) => new TopologyUpdateError(tableName, error),
 		});
 
 		// Step 5: Get the shards for this table to use in DROP
-		const tableShards = topologyData.table_shards.filter((s) => s.table_name === tableName);
+		const tableShards = topologyData.table_shards.filter(
+			(s) => s.table_name === tableName,
+		);
 		const uniqueNodes = [...new Set(tableShards.map((s) => s.node_id))];
 
 		// Step 6: Execute DROP TABLE on all storage nodes that have this table
@@ -195,20 +221,24 @@ export async function handleDropTable(
 				const storageStub = storage.get(storageId);
 
 				return Effect.tryPromise({
-					try: async () =>
-						(await storageStub.executeQuery({
+					try: () =>
+						storageStub.executeQuery({
 							query: `DROP TABLE IF EXISTS "${tableName}"`,
 							params: [],
-						})) as any,
+						}),
 					catch: (error) =>
-						new StorageExecutionError(nodeId, `DROP TABLE "${tableName}"`, error),
+						new StorageExecutionError(
+							nodeId,
+							`DROP TABLE "${tableName}"`,
+							error,
+						),
 				});
 			}),
-			{ concurrency: 'unbounded' } // Execute in parallel
+			{ concurrency: "unbounded" }, // Execute in parallel
 		);
 
 		// Step 7: Return success result
-		logger.info`Table dropped successfully ${{table: tableName}} ${{shardsRemoved: tableShards.length}}`;
+		logger.info`Table dropped successfully ${{ table: tableName }} ${{ shardsRemoved: tableShards.length }}`;
 
 		return {
 			rows: [],
@@ -221,16 +251,26 @@ export async function handleDropTable(
 		effect.pipe(
 			Effect.catchAll((error) => {
 				if (error instanceof TopologyFetchError) {
-					return Effect.fail(new Error(`Failed to fetch topology for database '${error.databaseId}'`));
+					return Effect.fail(
+						new Error(
+							`Failed to fetch topology for database '${error.databaseId}'`,
+						),
+					);
 				}
 				if (error instanceof TopologyUpdateError) {
-					return Effect.fail(new Error(`Failed to update topology for table '${error.tableName}'`));
+					return Effect.fail(
+						new Error(
+							`Failed to update topology for table '${error.tableName}'`,
+						),
+					);
 				}
 				if (error instanceof StorageExecutionError) {
-					return Effect.fail(new Error(`Failed to execute DROP TABLE on node '${error.nodeId}'`));
+					return Effect.fail(
+						new Error(`Failed to execute DROP TABLE on node '${error.nodeId}'`),
+					);
 				}
 				return Effect.fail(error as Error);
-			})
-		)
+			}),
+		),
 	);
 }

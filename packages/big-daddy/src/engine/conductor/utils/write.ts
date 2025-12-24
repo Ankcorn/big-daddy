@@ -1,18 +1,33 @@
-import type { SelectStatement, InsertStatement, UpdateStatement, DeleteStatement, Statement } from '@databases/sqlite-ast';
-import { generate } from '@databases/sqlite-ast';
-import { Effect, Data } from 'effect';
-import { logger } from '../../../logger';
-import type { QueryResult, ShardStats, QueryHandlerContext, ShardInfo, SqlParam } from '../types';
-import type { IndexMaintenanceJob, IndexJob } from '../../queue/types';
-import type { BatchQueryResult } from '../../storage';
-import { injectVirtualShard } from './helpers';
-import { extractKeyValueFromRow } from './utils';
-import type { QueryPlanData } from '../../topology';
+import type {
+	DeleteStatement,
+	InsertStatement,
+	SelectStatement,
+	Statement,
+	UpdateStatement,
+} from "@databases/sqlite-ast";
+import { generate } from "@databases/sqlite-ast";
+import { Data, Effect } from "effect";
+import { logger } from "../../../logger";
+import type { IndexMaintenanceJob } from "../../queue/types";
+import type { BatchQueryResult } from "../../storage";
+import type { QueryPlanData } from "../../topology";
+import type { TopologyCache } from "../../utils/topology-cache";
+import type {
+	QueryHandlerContext,
+	QueryResult,
+	ShardInfo,
+	ShardStats,
+	SqlParam,
+} from "../types";
+import { injectVirtualShard } from "./helpers";
+import { extractKeyValueFromRow } from "./utils";
 
 /**
  * Error type for shard query execution failures
  */
-class ShardQueryExecutionError extends Data.TaggedError('ShardQueryExecutionError')<{
+class ShardQueryExecutionError extends Data.TaggedError(
+	"ShardQueryExecutionError",
+)<{
 	readonly shardId: number;
 	readonly nodeId: string;
 	readonly statementType: string;
@@ -41,7 +56,11 @@ interface ShardExecutionResult {
  * Statement with its associated parameters
  */
 export interface StatementWithParams {
-	statement: SelectStatement | InsertStatement | UpdateStatement | DeleteStatement;
+	statement:
+		| SelectStatement
+		| InsertStatement
+		| UpdateStatement
+		| DeleteStatement;
 	params: SqlParam[];
 }
 
@@ -57,10 +76,14 @@ function prepareShardQueries(
 	shard: ShardInfo,
 	statementsWithParams: StatementWithParams[],
 ): ShardQueries {
-	const queries = statementsWithParams.map(({ statement, params }, idx) => {
-		const { modifiedStatement, modifiedParams } = injectVirtualShard(statement, params, shard.shard_id);
+	const queries = statementsWithParams.map(({ statement, params }, _idx) => {
+		const { modifiedStatement, modifiedParams } = injectVirtualShard(
+			statement,
+			params,
+			shard.shard_id,
+		);
 		const sql = generate(modifiedStatement);
-				return {
+		return {
 			query: sql,
 			params: modifiedParams,
 		};
@@ -73,8 +96,13 @@ function prepareShardQueries(
  * Transform raw storage results into structured QueryResults
  * Pure function for data transformation
  */
-function transformStorageResults(rawResults: QueryResult | BatchQueryResult, isMultipleStatements: boolean): QueryResult[] {
-	const rawResultsArray = isMultipleStatements ? (rawResults as BatchQueryResult).results || [rawResults as QueryResult] : [rawResults as QueryResult];
+function transformStorageResults(
+	rawResults: QueryResult | BatchQueryResult,
+	isMultipleStatements: boolean,
+): QueryResult[] {
+	const rawResultsArray = isMultipleStatements
+		? (rawResults as BatchQueryResult).results || [rawResults as QueryResult]
+		: [rawResults as QueryResult];
 
 	return rawResultsArray.map((result: QueryResult) => ({
 		rows: result.rows || [],
@@ -99,25 +127,47 @@ function executeSingleShardQueries(
 	const storageStub = storage.get(storageId);
 
 	// Wrap the async call and transform results
-	const executeQuery: Effect.Effect<QueryResult | BatchQueryResult, ShardQueryExecutionError> = (
-		Effect.promise(
-			() => storageStub.executeQuery(isMultipleStatements ? queries : queries[0]!) as any,
-		) as any
-	).pipe(
-		Effect.mapError(
-			(error: unknown) =>
-				new ShardQueryExecutionError({
-					shardId: shard.shard_id,
-					nodeId: shard.node_id,
-					statementType,
-					originalError: error instanceof Error ? error : new Error(String(error)),
-				}),
-		),
-	);
+	const executeQuery: Effect.Effect<
+		QueryResult | BatchQueryResult,
+		ShardQueryExecutionError
+	> = Effect.tryPromise({
+		try: async () => {
+			const result = (await storageStub.executeQuery(
+				isMultipleStatements ? queries : queries[0]!,
+			)) as QueryResult | BatchQueryResult;
+			// Check for error in response (errors returned instead of thrown to preserve message across RPC)
+			const queryResult = result as QueryResult;
+			if (queryResult.error) {
+				throw new Error(queryResult.error);
+			}
+			return result;
+		},
+		catch: (error) => {
+			// Preserve the error message in the ShardQueryExecutionError
+			// Effect's runPromise loses TaggedError properties, so we also set the message
+			const originalError =
+				error instanceof Error ? error : new Error(String(error));
+			const shardError = new ShardQueryExecutionError({
+				shardId: shard.shard_id,
+				nodeId: shard.node_id,
+				statementType,
+				originalError,
+			});
+			// Override the message to include the original error for when properties are lost
+			Object.defineProperty(shardError, "message", {
+				value: `Shard query failed: ${originalError.message}`,
+				writable: true,
+			});
+			return shardError;
+		},
+	});
 
 	return executeQuery.pipe(
 		Effect.andThen((rawResults) => {
-			const statementResults = transformStorageResults(rawResults, isMultipleStatements);
+			const statementResults = transformStorageResults(
+				rawResults,
+				isMultipleStatements,
+			);
 			const shardDuration = Date.now() - shardStartTime;
 
 			// Use stats from the last statement (typically the write operation)
@@ -140,9 +190,7 @@ function executeSingleShardQueries(
 			return Effect.succeed(result);
 		}),
 		Effect.tapError(() => {
-			logger.error(`${statementType} shard query failed`, {
-				shardId: shard.shard_id,
-			});
+			logger.error`${statementType} shard query failed ${{ shardId: String(shard.shard_id) }}`;
 			return Effect.void;
 		}),
 	);
@@ -168,9 +216,16 @@ function executeSingleShardQueries(
 function executeOnShardsEffect(
 	context: QueryHandlerContext,
 	shardsToQuery: ShardInfo[],
-	statement: SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
+	statement:
+		| SelectStatement
+		| InsertStatement
+		| UpdateStatement
+		| DeleteStatement,
 	params: SqlParam[],
-): Effect.Effect<{ results: QueryResult[]; shardStats: ShardStats[] }, ShardQueryExecutionError>;
+): Effect.Effect<
+	{ results: QueryResult[]; shardStats: ShardStats[] },
+	ShardQueryExecutionError
+>;
 
 // Overload 2: Two statements + shared params
 function executeOnShardsEffect(
@@ -181,7 +236,10 @@ function executeOnShardsEffect(
 		SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
 	],
 	params: SqlParam[],
-): Effect.Effect<{ results: [QueryResult[], QueryResult[]]; shardStats: ShardStats[] }, ShardQueryExecutionError>;
+): Effect.Effect<
+	{ results: [QueryResult[], QueryResult[]]; shardStats: ShardStats[] },
+	ShardQueryExecutionError
+>;
 
 // Overload 3: Three statements + shared params
 function executeOnShardsEffect(
@@ -194,7 +252,10 @@ function executeOnShardsEffect(
 	],
 	params: SqlParam[],
 ): Effect.Effect<
-	{ results: [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] },
+	{
+		results: [QueryResult[], QueryResult[], QueryResult[]];
+		shardStats: ShardStats[];
+	},
 	ShardQueryExecutionError
 >;
 
@@ -202,10 +263,22 @@ function executeOnShardsEffect(
 function executeOnShardsEffect(
 	context: QueryHandlerContext,
 	shardsToQuery: ShardInfo[],
-	statement: readonly (SelectStatement | InsertStatement | UpdateStatement | DeleteStatement)[],
+	statement: readonly (
+		| SelectStatement
+		| InsertStatement
+		| UpdateStatement
+		| DeleteStatement
+	)[],
 	params: SqlParam[],
 ): Effect.Effect<
-	{ results: QueryResult[] | QueryResult[][] | [QueryResult[], QueryResult[]] | [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] },
+	{
+		results:
+			| QueryResult[]
+			| QueryResult[][]
+			| [QueryResult[], QueryResult[]]
+			| [QueryResult[], QueryResult[], QueryResult[]];
+		shardStats: ShardStats[];
+	},
 	ShardQueryExecutionError
 >;
 
@@ -228,17 +301,32 @@ function executeOnShardsEffect(
 		| InsertStatement
 		| UpdateStatement
 		| DeleteStatement
-		| readonly (SelectStatement | InsertStatement | UpdateStatement | DeleteStatement)[]
+		| readonly (
+				| SelectStatement
+				| InsertStatement
+				| UpdateStatement
+				| DeleteStatement
+		  )[]
 		| readonly StatementWithParams[],
 	params?: SqlParam[],
 ): Effect.Effect<
-	{ results: QueryResult[] | QueryResult[][] | [QueryResult[], QueryResult[]] | [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] },
+	{
+		results:
+			| QueryResult[]
+			| QueryResult[][]
+			| [QueryResult[], QueryResult[]]
+			| [QueryResult[], QueryResult[], QueryResult[]];
+		shardStats: ShardStats[];
+	},
 	ShardQueryExecutionError
 > {
 	const BATCH_SIZE = 7;
 
 	// Detect format and normalize to StatementWithParams[]
-	const isNewFormat = Array.isArray(statementsInput) && statementsInput.length > 0 && 'statement' in statementsInput[0];
+	const isNewFormat =
+		Array.isArray(statementsInput) &&
+		statementsInput.length > 0 &&
+		"statement" in statementsInput[0];
 	let statementsWithParams: StatementWithParams[];
 	let isMultipleStatements: boolean;
 	let statementType: string;
@@ -250,23 +338,32 @@ function executeOnShardsEffect(
 		statementType = statementsWithParams[0]!.statement.type;
 	} else {
 		// Legacy format: statements + shared params
-		const statements = Array.isArray(statementsInput) ? statementsInput : [statementsInput];
+		const statements = Array.isArray(statementsInput)
+			? statementsInput
+			: [statementsInput];
 		isMultipleStatements = statements.length > 1;
-		statementType = statements[0]!.type;
+		statementType = statements[0]?.type;
 
 		// Convert to StatementWithParams format: each statement paired with params
 		statementsWithParams = statements.map((stmt) => ({
-			statement: stmt as SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
+			statement: stmt as
+				| SelectStatement
+				| InsertStatement
+				| UpdateStatement
+				| DeleteStatement,
 			params: params || [],
 		}));
 	}
 
 	// Prepare queries for all shards (pure transformation)
-	const allPreparedQueries = shardsToQuery.map((shard) => prepareShardQueries(shard, statementsWithParams));
+	const allPreparedQueries = shardsToQuery.map((shard) =>
+		prepareShardQueries(shard, statementsWithParams),
+	);
 
 	// Split into batches
-	const batches = Array.from({ length: Math.ceil(allPreparedQueries.length / BATCH_SIZE) }, (_, i) =>
-		allPreparedQueries.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE),
+	const batches = Array.from(
+		{ length: Math.ceil(allPreparedQueries.length / BATCH_SIZE) },
+		(_, i) => allPreparedQueries.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE),
 	);
 
 	// Execute all batches sequentially using Effect
@@ -278,9 +375,16 @@ function executeOnShardsEffect(
 		for (const batch of batches) {
 			// Execute all shards in a batch in parallel
 			const batchResults = yield* Effect.all(
-				batch.map((shardQueries) => executeSingleShardQueries(context, shardQueries, isMultipleStatements, statementType)),
+				batch.map((shardQueries) =>
+					executeSingleShardQueries(
+						context,
+						shardQueries,
+						isMultipleStatements,
+						statementType,
+					),
+				),
 				// Use concurrency mode for parallel execution within batch
-				{ concurrency: 'unbounded' },
+				{ concurrency: "unbounded" },
 			);
 
 			// Collect results from this batch
@@ -292,12 +396,14 @@ function executeOnShardsEffect(
 
 		// Return the final aggregated results
 		return {
-			results: isMultipleStatements ? (allResults as [QueryResult, QueryResult]) : (allResults as QueryResult[]),
+			results: isMultipleStatements
+				? (allResults as [QueryResult, QueryResult])
+				: (allResults as QueryResult[]),
 			shardStats: allShardStats,
 		};
 	}).pipe(
 		// Log any errors
-		Effect.catchTag('ShardQueryExecutionError', (error) => Effect.fail(error)),
+		Effect.catchTag("ShardQueryExecutionError", (error) => Effect.fail(error)),
 	);
 }
 
@@ -328,27 +434,48 @@ export async function executeOnShards(
 	context: QueryHandlerContext,
 	shardsToQuery: ShardInfo[],
 	statementsWithParams: readonly [StatementWithParams, StatementWithParams],
-): Promise<{ results: [QueryResult[], QueryResult[]]; shardStats: ShardStats[] }>;
+): Promise<{
+	results: [QueryResult[], QueryResult[]];
+	shardStats: ShardStats[];
+}>;
 
 // NEW: Overload for three statement+params pairs
 export async function executeOnShards(
 	context: QueryHandlerContext,
 	shardsToQuery: ShardInfo[],
-	statementsWithParams: readonly [StatementWithParams, StatementWithParams, StatementWithParams],
-): Promise<{ results: [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] }>;
+	statementsWithParams: readonly [
+		StatementWithParams,
+		StatementWithParams,
+		StatementWithParams,
+	],
+): Promise<{
+	results: [QueryResult[], QueryResult[], QueryResult[]];
+	shardStats: ShardStats[];
+}>;
 
 // NEW: Overload for general array of statement+params pairs
 export async function executeOnShards(
 	context: QueryHandlerContext,
 	shardsToQuery: ShardInfo[],
 	statementsWithParams: readonly StatementWithParams[],
-): Promise<{ results: QueryResult[] | QueryResult[][] | [QueryResult[], QueryResult[]] | [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] }>;
+): Promise<{
+	results:
+		| QueryResult[]
+		| QueryResult[][]
+		| [QueryResult[], QueryResult[]]
+		| [QueryResult[], QueryResult[], QueryResult[]];
+	shardStats: ShardStats[];
+}>;
 
 // LEGACY: Overload 1: Single statement + shared params
 export async function executeOnShards(
 	context: QueryHandlerContext,
 	shardsToQuery: ShardInfo[],
-	statement: SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
+	statement:
+		| SelectStatement
+		| InsertStatement
+		| UpdateStatement
+		| DeleteStatement,
 	params: SqlParam[],
 ): Promise<{ results: QueryResult[]; shardStats: ShardStats[] }>;
 
@@ -361,7 +488,10 @@ export async function executeOnShards(
 		SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
 	],
 	params: SqlParam[],
-): Promise<{ results: [QueryResult[], QueryResult[]]; shardStats: ShardStats[] }>;
+): Promise<{
+	results: [QueryResult[], QueryResult[]];
+	shardStats: ShardStats[];
+}>;
 
 // Overload 3: Three statements
 export async function executeOnShards(
@@ -373,15 +503,30 @@ export async function executeOnShards(
 		SelectStatement | InsertStatement | UpdateStatement | DeleteStatement,
 	],
 	params: SqlParam[],
-): Promise<{ results: [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] }>;
+): Promise<{
+	results: [QueryResult[], QueryResult[], QueryResult[]];
+	shardStats: ShardStats[];
+}>;
 
 // Overload 4: General array (catch-all for other cases)
 export async function executeOnShards(
 	context: QueryHandlerContext,
 	shardsToQuery: ShardInfo[],
-	statement: readonly (SelectStatement | InsertStatement | UpdateStatement | DeleteStatement)[],
+	statement: readonly (
+		| SelectStatement
+		| InsertStatement
+		| UpdateStatement
+		| DeleteStatement
+	)[],
 	params: SqlParam[],
-): Promise<{ results: QueryResult[] | QueryResult[][] | [QueryResult[], QueryResult[]] | [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] }>;
+): Promise<{
+	results:
+		| QueryResult[]
+		| QueryResult[][]
+		| [QueryResult[], QueryResult[]]
+		| [QueryResult[], QueryResult[], QueryResult[]];
+	shardStats: ShardStats[];
+}>;
 
 // Implementation
 export async function executeOnShards(
@@ -392,12 +537,34 @@ export async function executeOnShards(
 		| InsertStatement
 		| UpdateStatement
 		| DeleteStatement
-		| readonly (SelectStatement | InsertStatement | UpdateStatement | DeleteStatement)[]
+		| readonly (
+				| SelectStatement
+				| InsertStatement
+				| UpdateStatement
+				| DeleteStatement
+		  )[]
 		| readonly StatementWithParams[],
 	params?: SqlParam[],
-): Promise<{ results: QueryResult[] | QueryResult[][] | [QueryResult[], QueryResult[]] | [QueryResult[], QueryResult[], QueryResult[]]; shardStats: ShardStats[] }> {
+): Promise<{
+	results:
+		| QueryResult[]
+		| QueryResult[][]
+		| [QueryResult[], QueryResult[]]
+		| [QueryResult[], QueryResult[], QueryResult[]];
+	shardStats: ShardStats[];
+}> {
 	// Pass through to executeOnShardsEffect, which handles both formats
-	const effect = executeOnShardsEffect(context, shardsToQuery, statementsInput as any, params || []);
+	// Type narrowing is handled within executeOnShardsEffect implementation
+	const effect = executeOnShardsEffect(
+		context,
+		shardsToQuery,
+		statementsInput as
+			| SelectStatement
+			| InsertStatement
+			| UpdateStatement
+			| DeleteStatement,
+		params || [],
+	);
 	return Effect.runPromise(effect);
 }
 
@@ -419,18 +586,21 @@ export async function logWriteIfResharding(
 	const reshardingState = await topologyStub.getReshardingState(tableName);
 
 	// Only log if resharding is active and in copying phase
-	if (!reshardingState || reshardingState.status !== 'copying') {
+	if (!reshardingState || reshardingState.status !== "copying") {
 		return;
 	}
 
 	// Log the write operation to the queue for later replay
-	const operation = (operationType === 'InsertStatement' ? 'INSERT' : operationType === 'UpdateStatement' ? 'UPDATE' : 'DELETE') as
-		| 'INSERT'
-		| 'UPDATE'
-		| 'DELETE';
+	const operation = (
+		operationType === "InsertStatement"
+			? "INSERT"
+			: operationType === "UpdateStatement"
+				? "UPDATE"
+				: "DELETE"
+	) as "INSERT" | "UPDATE" | "DELETE";
 
 	const changeLogEntry = {
-		type: 'resharding_change_log' as const,
+		type: "resharding_change_log" as const,
 		resharding_id: reshardingState.change_log_id,
 		database_id: databaseId,
 		table_name: tableName,
@@ -447,7 +617,7 @@ export async function logWriteIfResharding(
 		}
 	} catch (error) {
 		// Log but don't fail - write logging should not block query execution
-		logger.warn`Failed to log write during resharding ${{table: tableName}} ${{operation}} ${{error: (error as Error).message}}`;
+		logger.warn`Failed to log write during resharding ${{ table: tableName }} ${{ operation }} ${{ error: (error as Error).message }}`;
 	}
 }
 
@@ -469,7 +639,10 @@ export async function enqueueIndexMaintenanceJob(
 	}
 
 	// For UPDATE: determine which indexes are affected by the updated columns
-	const updatedColumns = statement.type === 'UpdateStatement' ? statement.set.map((s) => s.column.name) : undefined;
+	const updatedColumns =
+		statement.type === "UpdateStatement"
+			? statement.set.map((s) => s.column.name)
+			: undefined;
 
 	// Filter to affected indexes only
 	const affectedIndexes = updatedColumns
@@ -484,10 +657,10 @@ export async function enqueueIndexMaintenanceJob(
 	}
 
 	const job: IndexMaintenanceJob = {
-		type: 'maintain_index',
+		type: "maintain_index",
 		database_id: context.databaseId,
 		table_name: tableName,
-		operation: statement.type === 'UpdateStatement' ? 'UPDATE' : 'DELETE',
+		operation: statement.type === "UpdateStatement" ? "UPDATE" : "DELETE",
 		shard_ids: shardIds,
 		affected_indexes: affectedIndexes.map((idx) => idx.index_name),
 		updated_columns: updatedColumns,
@@ -500,7 +673,7 @@ export async function enqueueIndexMaintenanceJob(
 			await indexQueue.send(job);
 		}
 	} catch (error) {
-		logger.error`Failed to enqueue index maintenance job ${{error: (error as Error).message}}`;
+		logger.error`Failed to enqueue index maintenance job ${{ error: (error as Error).message }}`;
 		// Don't throw - index operations should not block queries
 	}
 }
@@ -512,7 +685,11 @@ export function invalidateCacheForWrite(
 	context: QueryHandlerContext,
 	tableName: string,
 	statement: InsertStatement | UpdateStatement | DeleteStatement,
-	virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
+	virtualIndexes: Array<{
+		index_name: string;
+		columns: string;
+		index_type: "hash" | "unique";
+	}>,
 	params: SqlParam[],
 ): void {
 	const { cache } = context;
@@ -525,11 +702,11 @@ export function invalidateCacheForWrite(
 		return; // No indexes to invalidate
 	}
 
-	if (statement.type === 'InsertStatement') {
+	if (statement.type === "InsertStatement") {
 		invalidateIndexCacheForInsert(cache, statement, virtualIndexes, params);
-	} else if (statement.type === 'UpdateStatement') {
+	} else if (statement.type === "UpdateStatement") {
 		invalidateIndexCacheForUpdate(cache, statement, virtualIndexes);
-	} else if (statement.type === 'DeleteStatement') {
+	} else if (statement.type === "DeleteStatement") {
 		invalidateIndexCacheForDelete(cache, statement, virtualIndexes);
 	}
 }
@@ -538,9 +715,13 @@ export function invalidateCacheForWrite(
  * Invalidate index cache entries for INSERT operation
  */
 function invalidateIndexCacheForInsert(
-	cache: any,
+	cache: TopologyCache,
 	statement: InsertStatement,
-	virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
+	virtualIndexes: Array<{
+		index_name: string;
+		columns: string;
+		index_type: "hash" | "unique";
+	}>,
 	params: SqlParam[],
 ): void {
 	if (!statement.columns || statement.values.length === 0) {
@@ -548,7 +729,7 @@ function invalidateIndexCacheForInsert(
 	}
 
 	const columns = statement.columns;
-	const row = statement.values[0]; // Only handle single-row inserts for now
+	const row = statement.values[0]!; // Only handle single-row inserts for now
 
 	for (const index of virtualIndexes) {
 		const indexColumns = JSON.parse(index.columns);
@@ -563,9 +744,13 @@ function invalidateIndexCacheForInsert(
  * Invalidate index cache entries for UPDATE operation
  */
 function invalidateIndexCacheForUpdate(
-	cache: any,
+	cache: TopologyCache,
 	statement: UpdateStatement,
-	virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
+	virtualIndexes: Array<{
+		index_name: string;
+		columns: string;
+		index_type: "hash" | "unique";
+	}>,
 ): void {
 	// Get the columns being updated
 	const updatedColumns = statement.set.map((s) => s.column.name);
@@ -587,9 +772,13 @@ function invalidateIndexCacheForUpdate(
  * Invalidate index cache entries for DELETE operation
  */
 function invalidateIndexCacheForDelete(
-	cache: any,
-	statement: DeleteStatement,
-	virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
+	cache: TopologyCache,
+	_statement: DeleteStatement,
+	virtualIndexes: Array<{
+		index_name: string;
+		columns: string;
+		index_type: "hash" | "unique";
+	}>,
 ): void {
 	// For DELETE, we can't easily determine which values are being deleted without querying
 	// So we invalidate the entire index cache for all indexes
@@ -629,7 +818,12 @@ export async function getCachedQueryPlanData(
 	// Cache miss - fetch from Topology DO
 	const topologyId = topology.idFromName(databaseId);
 	const topologyStub = topology.get(topologyId);
-	const planData = await topologyStub.getQueryPlanData(tableName, statement, params, correlationId);
+	const planData = await topologyStub.getQueryPlanData(
+		tableName,
+		statement,
+		params,
+		correlationId,
+	);
 
 	// Store in cache if cacheable
 	if (cacheKey) {

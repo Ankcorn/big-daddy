@@ -5,47 +5,47 @@
  * and tag-based context tracking across distributed Durable Objects.
  */
 
-import { Logger } from 'hatchlet'
+import { Logger } from "hatchlet";
 
 /**
  * Standard log tags used throughout the Big Daddy system
  */
 export type BigDaddyLogTags = {
 	/** Correlation ID for tracing requests across the distributed system */
-	correlationId: string
+	correlationId: string;
 	/** Request ID (alias for correlationId, used by Workers Logs UI) */
-	requestId?: string
+	requestId?: string;
 	/** Database identifier being queried */
-	databaseId?: string
+	databaseId?: string;
 	/** Component generating the log (VitessWorker, Conductor, Topology, Storage, QueueConsumer) */
-	component?: string
+	component?: string;
 	/** Operation being performed (query, route, execute, maintain, etc.) */
-	operation?: string
+	operation?: string;
 	/** Query type (SELECT, INSERT, UPDATE, DELETE) */
-	queryType?: string
+	queryType?: string;
 	/** Table being operated on */
-	table?: string
+	table?: string;
 	/** Shard ID for storage operations */
-	shardId?: string
+	shardId?: string;
 	/** Index name for index operations */
-	indexName?: string
+	indexName?: string;
 	/** Job ID for queue operations */
-	jobId?: string
+	jobId?: string;
 	/** Job type for queue operations */
-	jobType?: string
+	jobType?: string;
 	/** Cache hit/miss indicator */
-	cacheHit?: boolean
+	cacheHit?: boolean;
 	/** Duration in milliseconds */
-	duration?: number
+	duration?: number;
 	/** Error code or type */
-	errorCode?: string
+	errorCode?: string;
 	/** Number of shards involved */
-	shardCount?: number
+	shardCount?: number;
 	/** Status of operation (success, failure, partial) */
-	status?: string
+	status?: string;
 	/** Source tag (auto-populated by decorators) */
-	source?: string
-}
+	source?: string;
+};
 
 /**
  * Global logger instance for Big Daddy
@@ -53,4 +53,4 @@ export type BigDaddyLogTags = {
  * This logger should be used throughout the application with structured
  * tags to enable effective debugging and analytics.
  */
-export const logger = new Logger()
+export const logger = new Logger();

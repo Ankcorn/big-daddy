@@ -6,15 +6,20 @@
  */
 
 import type {
-	SelectStatement,
-	InsertStatement,
-	UpdateStatement,
 	DeleteStatement,
-} from '@databases/sqlite-ast';
-import { logger } from '../../../logger';
-import type { QueryResult, QueryHandlerContext, ShardInfo } from '../types';
-import type { IndexMaintenanceEventJob } from '../../queue/types';
-import type { StatementWithParams } from './write';
+	InsertStatement,
+	SelectStatement,
+	UpdateStatement,
+} from "@databases/sqlite-ast";
+import { logger } from "../../../logger";
+import type { IndexMaintenanceEventJob } from "../../queue/types";
+import type {
+	QueryHandlerContext,
+	QueryResult,
+	ShardInfo,
+	SqlParam,
+} from "../types";
+import type { StatementWithParams } from "./write";
 
 /**
  * Prepare queries for index maintenance
@@ -35,8 +40,8 @@ export function prepareIndexMaintenanceQueries(
 		| DeleteStatement
 		| SelectStatement,
 	selectStatement?: SelectStatement, // For DELETE/UPDATE
-	params?: any[],
-	selectParams?: any[], // For UPDATE when different from main params
+	params?: SqlParam[],
+	selectParams?: SqlParam[], // For UPDATE when different from main params
 ): StatementWithParams[] {
 	// No indexes: just return the main statement
 	if (!hasIndexes) {
@@ -46,23 +51,25 @@ export function prepareIndexMaintenanceQueries(
 	// With indexes: return appropriate query pattern
 	const operationType = mainStatement.type;
 
-	if (operationType === 'InsertStatement') {
+	if (operationType === "InsertStatement") {
 		// INSERT: no capture needed
 		return [{ statement: mainStatement, params: params || [] }];
 	}
 
-	if (operationType === 'DeleteStatement') {
+	if (operationType === "DeleteStatement") {
 		// DELETE: [SELECT capture, DELETE]
-		if (!selectStatement) throw new Error('SELECT statement required for DELETE');
+		if (!selectStatement)
+			throw new Error("SELECT statement required for DELETE");
 		return [
 			{ statement: selectStatement, params: params || [] },
 			{ statement: mainStatement, params: params || [] },
 		];
 	}
 
-	if (operationType === 'UpdateStatement') {
+	if (operationType === "UpdateStatement") {
 		// UPDATE: [SELECT before, UPDATE, SELECT after]
-		if (!selectStatement) throw new Error('SELECT statement required for UPDATE');
+		if (!selectStatement)
+			throw new Error("SELECT statement required for UPDATE");
 		return [
 			{ statement: selectStatement, params: selectParams || [] },
 			{ statement: mainStatement, params: params || [] },
@@ -85,15 +92,15 @@ export function prepareIndexMaintenanceQueries(
  * This method is shared across INSERT, DELETE, and UPDATE to reduce boilerplate.
  */
 export async function dispatchIndexSyncingFromQueryResults(
-	operationType: 'INSERT' | 'DELETE' | 'UPDATE',
+	operationType: "INSERT" | "DELETE" | "UPDATE",
 	queryResults: QueryResult[][],
 	tableName: string,
-	shardsToQuery: ShardInfo[],
+	_shardsToQuery: ShardInfo[],
 	virtualIndexes: Array<{ index_name: string; columns: string }>,
 	context: QueryHandlerContext,
 	rowDataExtractor: (results: QueryResult[][]) => {
-		oldRows?: Map<number, Record<string, any>[]>;
-		newRows?: Map<number, Record<string, any>[]>;
+		oldRows?: Map<number, Record<string, unknown>[]>;
+		newRows?: Map<number, Record<string, unknown>[]>;
 	},
 ): Promise<void> {
 	const { indexQueue, databaseId, correlationId } = context;
@@ -106,19 +113,19 @@ export async function dispatchIndexSyncingFromQueryResults(
 	const { oldRows, newRows } = rowDataExtractor(queryResults);
 
 	// Generate events based on operation
-	let events: IndexMaintenanceEventJob['events'] = [];
+	let events: IndexMaintenanceEventJob["events"] = [];
 
-	if (operationType === 'INSERT') {
+	if (operationType === "INSERT") {
 		// For INSERT: just the new rows
 		if (newRows) {
 			events = generateInsertIndexEvents(newRows, virtualIndexes);
 		}
-	} else if (operationType === 'DELETE') {
+	} else if (operationType === "DELETE") {
 		// For DELETE: just the old rows (being removed)
 		if (oldRows) {
 			events = generateDeleteIndexEvents(oldRows, virtualIndexes);
 		}
-	} else if (operationType === 'UPDATE') {
+	} else if (operationType === "UPDATE") {
 		// For UPDATE: both old and new rows
 		if (oldRows && newRows) {
 			events = generateUpdateIndexEvents(oldRows, newRows, virtualIndexes);
@@ -128,7 +135,7 @@ export async function dispatchIndexSyncingFromQueryResults(
 	// Queue if there are events
 	if (events.length > 0) {
 		const job: IndexMaintenanceEventJob = {
-			type: 'maintain_index_events',
+			type: "maintain_index_events",
 			database_id: databaseId,
 			table_name: tableName,
 			events,
@@ -138,7 +145,7 @@ export async function dispatchIndexSyncingFromQueryResults(
 
 		await indexQueue.send(job);
 
-		logger.info`Index maintenance events queued ${{operationType}} ${{eventCount: events.length}}`;
+		logger.info`Index maintenance events queued ${{ operationType }} ${{ eventCount: events.length }}`;
 	}
 }
 
@@ -146,7 +153,10 @@ export async function dispatchIndexSyncingFromQueryResults(
  * Build a key value for indexed column(s) from a row
  * Returns null if any indexed column is NULL (NULL values are not indexed)
  */
-function buildIndexKeyValue(row: Record<string, any>, columns: string[]): string | null {
+function buildIndexKeyValue(
+	row: Record<string, unknown>,
+	columns: string[],
+): string | null {
 	if (columns.length === 1) {
 		const value = row[columns[0]!];
 		if (value === null || value === undefined) {
@@ -167,16 +177,16 @@ function buildIndexKeyValue(row: Record<string, any>, columns: string[]): string
  * Generate INSERT index events from new rows
  */
 function generateInsertIndexEvents(
-	newRows: Map<number, Record<string, any>[]>,
+	newRows: Map<number, Record<string, unknown>[]>,
 	virtualIndexes: Array<{ index_name: string; columns: string }>,
-): IndexMaintenanceEventJob['events'] {
+): IndexMaintenanceEventJob["events"] {
 	const eventMap = new Map<
 		string,
 		{
 			index_name: string;
 			key_value: string;
 			shard_id: number;
-			operation: 'add';
+			operation: "add";
 		}
 	>();
 
@@ -194,7 +204,7 @@ function generateInsertIndexEvents(
 						index_name: index.index_name,
 						key_value: keyValue,
 						shard_id: shardId,
-						operation: 'add',
+						operation: "add",
 					});
 				}
 			}
@@ -208,16 +218,16 @@ function generateInsertIndexEvents(
  * Generate DELETE index events from old rows
  */
 function generateDeleteIndexEvents(
-	oldRows: Map<number, Record<string, any>[]>,
+	oldRows: Map<number, Record<string, unknown>[]>,
 	virtualIndexes: Array<{ index_name: string; columns: string }>,
-): IndexMaintenanceEventJob['events'] {
+): IndexMaintenanceEventJob["events"] {
 	const eventMap = new Map<
 		string,
 		{
 			index_name: string;
 			key_value: string;
 			shard_id: number;
-			operation: 'remove';
+			operation: "remove";
 		}
 	>();
 
@@ -235,7 +245,7 @@ function generateDeleteIndexEvents(
 						index_name: index.index_name,
 						key_value: keyValue,
 						shard_id: shardId,
-						operation: 'remove',
+						operation: "remove",
 					});
 				}
 			}
@@ -256,17 +266,17 @@ function generateDeleteIndexEvents(
  * Deduplication is per-shard; global dedup is handled by index handler via idempotent SQLite ops.
  */
 function generateUpdateIndexEvents(
-	oldRows: Map<number, Record<string, any>[]>,
-	newRows: Map<number, Record<string, any>[]>,
+	oldRows: Map<number, Record<string, unknown>[]>,
+	newRows: Map<number, Record<string, unknown>[]>,
 	virtualIndexes: Array<{ index_name: string; columns: string }>,
-): IndexMaintenanceEventJob['events'] {
+): IndexMaintenanceEventJob["events"] {
 	const eventMap = new Map<
 		string,
 		{
 			index_name: string;
 			key_value: string;
 			shard_id: number;
-			operation: 'add' | 'remove';
+			operation: "add" | "remove";
 		}
 	>();
 
@@ -300,7 +310,7 @@ function generateUpdateIndexEvents(
 						index_name: index.index_name,
 						key_value: value,
 						shard_id: shardId,
-						operation: 'remove',
+						operation: "remove",
 					});
 				}
 			}
@@ -313,7 +323,7 @@ function generateUpdateIndexEvents(
 						index_name: index.index_name,
 						key_value: value,
 						shard_id: shardId,
-						operation: 'add',
+						operation: "add",
 					});
 				}
 			}

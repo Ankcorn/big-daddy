@@ -8,13 +8,16 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "strict": true,
+    "noImplicitAny": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "outDir": "dist",
     "lib": ["ES2024"],
-    "types": ["vitest/globals"]
+    "types": ["vitest/globals"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "hono/jsx"
   },
   "include": ["**/*.ts", "**/*.tsx"],
   "exclude": ["node_modules"]

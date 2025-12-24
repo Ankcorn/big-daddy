@@ -7,7 +7,9 @@ export const HomePage = () => (
 
 		<div class="py-12 border-b-2 border-black">
 			<h1 class="text-3xl font-bold tracking-tight text-black">Big Daddy</h1>
-			<p class="mt-2 text-sm text-black">Distributed SQL Database on Cloudflare Workers</p>
+			<p class="mt-2 text-sm text-black">
+				Distributed SQL Database on Cloudflare Workers
+			</p>
 		</div>
 
 		<div class="max-w-md mx-auto my-12">
@@ -15,7 +17,10 @@ export const HomePage = () => (
 				<h2 class="text-lg font-semibold text-black mb-6">Access Database</h2>
 				<form method="get" action="/dash" class="space-y-5">
 					<div>
-						<label for="database-id" class="block text-sm font-medium text-black mb-2">
+						<label
+							for="database-id"
+							class="block text-sm font-medium text-black mb-2"
+						>
 							Database Name
 						</label>
 						<input
@@ -32,7 +37,10 @@ export const HomePage = () => (
 					</div>
 
 					<div>
-						<label for="node-count" class="block text-sm font-medium text-black mb-2">
+						<label
+							for="node-count"
+							class="block text-sm font-medium text-black mb-2"
+						>
 							Storage Nodes
 						</label>
 						<input
@@ -45,11 +53,15 @@ export const HomePage = () => (
 							class="w-full px-3 py-2 border-2 border-black text-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-black"
 						/>
 						<p class="mt-1 text-xs text-black">
-							Number of storage nodes to create (used only for new databases, 1-100).
+							Number of storage nodes to create (used only for new databases,
+							1-100).
 						</p>
 					</div>
 
-					<button type="submit" class="w-full bg-black text-white font-medium py-2 hover:bg-white hover:text-black hover:border-2 hover:border-black border-2 border-black transition">
+					<button
+						type="submit"
+						class="w-full bg-black text-white font-medium py-2 hover:bg-white hover:text-black hover:border-2 hover:border-black border-2 border-black transition"
+					>
 						Access Dashboard
 					</button>
 				</form>

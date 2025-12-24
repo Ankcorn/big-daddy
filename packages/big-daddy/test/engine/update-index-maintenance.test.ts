@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { env } from 'cloudflare:test';
-import { createConnection } from '../../src/index';
-import { processBuildIndexJob } from '../../src/engine/async-jobs/build-index';
-import type { IndexBuildJob } from '../../src/engine/queue/types';
+import { env } from "cloudflare:test";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { processBuildIndexJob } from "../../src/engine/async-jobs/build-index";
+import type { IndexBuildJob, IndexJob } from "../../src/engine/queue/types";
+import type { VirtualIndexEntry } from "../../src/engine/topology/types";
+import { createConnection } from "../../src/index";
 
 /**
  * UPDATE with Index Maintenance Tests
@@ -14,18 +15,18 @@ import type { IndexBuildJob } from '../../src/engine/queue/types';
  */
 
 // Store all queue messages for inspection in tests
-let capturedQueueMessages: any[] = [];
+let capturedQueueMessages: (IndexJob & { _processed?: boolean })[] = [];
 
 // Save original queue.send to restore later
 const originalQueueSend = env.INDEX_QUEUE.send.bind(env.INDEX_QUEUE);
 
-describe('UPDATE with Index Maintenance', () => {
+describe("UPDATE with Index Maintenance", () => {
 	beforeEach(() => {
 		// Clear captured messages before each test
 		capturedQueueMessages = [];
 		// Intercept queue.send to capture calls WITHOUT calling original
 		// This prevents async background processing that breaks test isolation
-		env.INDEX_QUEUE.send = async (message: any) => {
+		env.INDEX_QUEUE.send = async (message: IndexJob) => {
 			capturedQueueMessages.push(message);
 			// Don't call original - we'll process manually to avoid async race conditions
 		};
@@ -44,8 +45,8 @@ describe('UPDATE with Index Maintenance', () => {
 		while (processed) {
 			processed = false;
 			for (let i = capturedQueueMessages.length - 1; i >= 0; i--) {
-				const msg = capturedQueueMessages[i];
-				if (msg.type === 'build_index' && !msg._processed) {
+				const msg = capturedQueueMessages[i]!;
+				if (msg.type === "build_index" && !msg._processed) {
 					// Mark as processed to avoid infinite loop
 					msg._processed = true;
 					await processBuildIndexJob(msg as IndexBuildJob, env);
@@ -64,8 +65,8 @@ describe('UPDATE with Index Maintenance', () => {
 		return topology.virtual_index_entries;
 	}
 
-	it('should update index entries synchronously when updating indexed columns', async () => {
-		const dbId = 'test-update-with-index';
+	it("should update index entries synchronously when updating indexed columns", async () => {
+		const dbId = "test-update-with-index";
 		const sql = await createConnection(dbId, { nodes: 2 }, env);
 
 		// Create table with indexed column
@@ -82,35 +83,35 @@ describe('UPDATE with Index Maintenance', () => {
 		await processPendingIndexBuilds();
 
 		// Insert rows
-		await sql`INSERT INTO users (id, email, name) VALUES (1, ${'alice@example.com'}, ${'Alice'})`;
-		await sql`INSERT INTO users (id, email, name) VALUES (2, ${'bob@example.com'}, ${'Bob'})`;
-		await sql`INSERT INTO users (id, email, name) VALUES (3, ${'charlie@example.com'}, ${'Charlie'})`;
+		await sql`INSERT INTO users (id, email, name) VALUES (1, ${"alice@example.com"}, ${"Alice"})`;
+		await sql`INSERT INTO users (id, email, name) VALUES (2, ${"bob@example.com"}, ${"Bob"})`;
+		await sql`INSERT INTO users (id, email, name) VALUES (3, ${"charlie@example.com"}, ${"Charlie"})`;
 
 		// Verify initial index entries
 		let entries = await getIndexEntries(dbId);
 		expect(entries.length).toBe(3);
-		let keyValues = entries.map(e => e.key_value);
-		expect(keyValues).toContain('alice@example.com');
-		expect(keyValues).toContain('bob@example.com');
-		expect(keyValues).toContain('charlie@example.com');
+		let keyValues = entries.map((e: VirtualIndexEntry) => e.key_value);
+		expect(keyValues).toContain("alice@example.com");
+		expect(keyValues).toContain("bob@example.com");
+		expect(keyValues).toContain("charlie@example.com");
 
 		// Now update rows, changing the indexed email column
-		await sql`UPDATE users SET email = ${'alice.newemail@example.com'} WHERE id = 1`;
-		await sql`UPDATE users SET email = ${'bob.newemail@example.com'} WHERE id = 2`;
+		await sql`UPDATE users SET email = ${"alice.newemail@example.com"} WHERE id = 1`;
+		await sql`UPDATE users SET email = ${"bob.newemail@example.com"} WHERE id = 2`;
 
 		// Verify index entries were updated
 		entries = await getIndexEntries(dbId);
 		expect(entries.length).toBe(3);
-		keyValues = entries.map(e => e.key_value);
-		expect(keyValues).toContain('alice.newemail@example.com');
-		expect(keyValues).toContain('bob.newemail@example.com');
-		expect(keyValues).toContain('charlie@example.com');
-		expect(keyValues).not.toContain('alice@example.com');
-		expect(keyValues).not.toContain('bob@example.com');
+		keyValues = entries.map((e: VirtualIndexEntry) => e.key_value);
+		expect(keyValues).toContain("alice.newemail@example.com");
+		expect(keyValues).toContain("bob.newemail@example.com");
+		expect(keyValues).toContain("charlie@example.com");
+		expect(keyValues).not.toContain("alice@example.com");
+		expect(keyValues).not.toContain("bob@example.com");
 	});
 
-	it('should handle duplicate indexed values correctly during UPDATE', async () => {
-		const dbId = 'test-update-duplicates';
+	it("should handle duplicate indexed values correctly during UPDATE", async () => {
+		const dbId = "test-update-duplicates";
 		const sql = await createConnection(dbId, { nodes: 2 }, env);
 
 		// Create table
@@ -126,29 +127,29 @@ describe('UPDATE with Index Maintenance', () => {
 		await processPendingIndexBuilds();
 
 		// Insert rows - each with unique email initially
-		await sql`INSERT INTO records (id, email) VALUES (1, ${'user1@example.com'})`;
-		await sql`INSERT INTO records (id, email) VALUES (2, ${'user2@example.com'})`;
-		await sql`INSERT INTO records (id, email) VALUES (3, ${'user3@example.com'})`;
+		await sql`INSERT INTO records (id, email) VALUES (1, ${"user1@example.com"})`;
+		await sql`INSERT INTO records (id, email) VALUES (2, ${"user2@example.com"})`;
+		await sql`INSERT INTO records (id, email) VALUES (3, ${"user3@example.com"})`;
 
 		// Verify initial index entries - should have 3 unique entries
 		let entries = await getIndexEntries(dbId);
 		expect(entries.length).toBe(3);
 
 		// Update row 1 to a different email
-		await sql`UPDATE records SET email = ${'user1-new@example.com'} WHERE id = 1`;
+		await sql`UPDATE records SET email = ${"user1-new@example.com"} WHERE id = 1`;
 
 		// Verify index entries - old value removed, new value added
 		entries = await getIndexEntries(dbId);
 		expect(entries.length).toBe(3);
-		const keyValues = entries.map(e => e.key_value);
-		expect(keyValues).toContain('user1-new@example.com');
-		expect(keyValues).toContain('user2@example.com');
-		expect(keyValues).toContain('user3@example.com');
-		expect(keyValues).not.toContain('user1@example.com');
+		const keyValues = entries.map((e: VirtualIndexEntry) => e.key_value);
+		expect(keyValues).toContain("user1-new@example.com");
+		expect(keyValues).toContain("user2@example.com");
+		expect(keyValues).toContain("user3@example.com");
+		expect(keyValues).not.toContain("user1@example.com");
 	});
 
-	it('should handle NULL values correctly (not index them) during UPDATE', async () => {
-		const dbId = 'test-update-nulls';
+	it("should handle NULL values correctly (not index them) during UPDATE", async () => {
+		const dbId = "test-update-nulls";
 		const sql = await createConnection(dbId, { nodes: 2 }, env);
 
 		// Create table with nullable indexed column
@@ -164,9 +165,9 @@ describe('UPDATE with Index Maintenance', () => {
 		await processPendingIndexBuilds();
 
 		// Insert rows with some NULLs
-		await sql`INSERT INTO records (id, email) VALUES (1, ${'user1@example.com'})`;
+		await sql`INSERT INTO records (id, email) VALUES (1, ${"user1@example.com"})`;
 		await sql`INSERT INTO records (id, email) VALUES (2, ${null})`;
-		await sql`INSERT INTO records (id, email) VALUES (3, ${'user3@example.com'})`;
+		await sql`INSERT INTO records (id, email) VALUES (3, ${"user3@example.com"})`;
 
 		// Verify initial index entries - should only have 2 (no NULL)
 		let entries = await getIndexEntries(dbId);
@@ -175,19 +176,19 @@ describe('UPDATE with Index Maintenance', () => {
 		// Update row 1 to NULL (should remove from index)
 		// Update row 2 from NULL to email (should add to index)
 		await sql`UPDATE records SET email = ${null} WHERE id = 1`;
-		await sql`UPDATE records SET email = ${'user2@example.com'} WHERE id = 2`;
+		await sql`UPDATE records SET email = ${"user2@example.com"} WHERE id = 2`;
 
 		// Verify index entries
 		entries = await getIndexEntries(dbId);
 		expect(entries.length).toBe(2);
-		const keyValues = entries.map(e => e.key_value);
-		expect(keyValues).toContain('user2@example.com');
-		expect(keyValues).toContain('user3@example.com');
-		expect(keyValues).not.toContain('user1@example.com');
+		const keyValues = entries.map((e: VirtualIndexEntry) => e.key_value);
+		expect(keyValues).toContain("user2@example.com");
+		expect(keyValues).toContain("user3@example.com");
+		expect(keyValues).not.toContain("user1@example.com");
 	});
 
-	it('should handle composite indexes during UPDATE', async () => {
-		const dbId = 'test-update-composite';
+	it("should handle composite indexes during UPDATE", async () => {
+		const dbId = "test-update-composite";
 		const sql = await createConnection(dbId, { nodes: 2 }, env);
 
 		// Create table
@@ -204,20 +205,20 @@ describe('UPDATE with Index Maintenance', () => {
 		await processPendingIndexBuilds();
 
 		// Insert rows
-		await sql`INSERT INTO users (id, first_name, last_name) VALUES (1, ${'Alice'}, ${'Smith'})`;
-		await sql`INSERT INTO users (id, first_name, last_name) VALUES (2, ${'Bob'}, ${'Jones'})`;
+		await sql`INSERT INTO users (id, first_name, last_name) VALUES (1, ${"Alice"}, ${"Smith"})`;
+		await sql`INSERT INTO users (id, first_name, last_name) VALUES (2, ${"Bob"}, ${"Jones"})`;
 
 		// Verify initial index entries
 		let entries = await getIndexEntries(dbId);
 		expect(entries.length).toBe(2);
 
 		// Update first_name (affects composite index)
-		await sql`UPDATE users SET first_name = ${'Alicia'} WHERE id = 1`;
+		await sql`UPDATE users SET first_name = ${"Alicia"} WHERE id = 1`;
 
 		// Verify index entries were updated
 		entries = await getIndexEntries(dbId);
 		expect(entries.length).toBe(2);
-		const keyValues = entries.map(e => e.key_value);
+		const keyValues = entries.map((e: VirtualIndexEntry) => e.key_value);
 		// Composite keys are stored as JSON arrays
 		expect(keyValues).toContain('["Alicia","Smith"]');
 		expect(keyValues).toContain('["Bob","Jones"]');

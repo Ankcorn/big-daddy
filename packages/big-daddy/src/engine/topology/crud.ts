@@ -7,11 +7,21 @@
  * - updateTopology: Batch update topology metadata
  */
 
-import type { Topology } from './index';
-import type { TopologyData, TopologyUpdates, SqlParam, StorageNode, TableMetadata, TableShard, VirtualIndex, VirtualIndexEntry, ReshardingState, AsyncJob } from './types';
+import type {
+	AsyncJob,
+	ReshardingState,
+	SqlParam,
+	StorageNode,
+	TableMetadata,
+	TableShard,
+	TopologyData,
+	TopologyUpdates,
+	VirtualIndex,
+	VirtualIndexEntry,
+} from "./types";
 
 export class CRUDOperations {
-	constructor(private storage: any) {}
+	constructor(private storage: DurableObjectStorage) {}
 
 	/**
 	 * Create the cluster topology with a fixed number of storage nodes
@@ -20,27 +30,38 @@ export class CRUDOperations {
 	 * @param numNodes - Number of storage nodes in the cluster
 	 * @returns Success status or error
 	 */
-	async create(numNodes: number): Promise<{ success: boolean; error?: string }> {
+	async create(
+		numNodes: number,
+	): Promise<{ success: boolean; error?: string }> {
 		// Check if already created
-		const result = this.storage.sql.exec(`SELECT value FROM cluster_metadata WHERE key = 'created'`).toArray() as unknown as {
+		const result = this.storage.sql
+			.exec(`SELECT value FROM cluster_metadata WHERE key = 'created'`)
+			.toArray() as unknown as {
 			value: string;
 		}[];
 
-		if (result.length > 0 && result[0]!.value === 'true') {
-			throw new Error('Topology already created. Storage nodes cannot be modified after creation.');
+		if (result.length > 0 && result[0]?.value === "true") {
+			throw new Error(
+				"Topology already created. Storage nodes cannot be modified after creation.",
+			);
 		}
 
 		if (numNodes < 1) {
-			return { success: false, error: 'Number of nodes must be at least 1' };
+			return { success: false, error: "Number of nodes must be at least 1" };
 		}
 
 		const now = Date.now();
 
 		// Mark as created
-		this.storage.sql.exec(`INSERT INTO cluster_metadata (key, value) VALUES ('created', 'true')`);
+		this.storage.sql.exec(
+			`INSERT INTO cluster_metadata (key, value) VALUES ('created', 'true')`,
+		);
 
 		// Store number of nodes
-		this.storage.sql.exec(`INSERT INTO cluster_metadata (key, value) VALUES ('num_nodes', ?)`, String(numNodes));
+		this.storage.sql.exec(
+			`INSERT INTO cluster_metadata (key, value) VALUES ('num_nodes', ?)`,
+			String(numNodes),
+		);
 
 		// Create storage nodes with unique, unguessable IDs
 		for (let i = 0; i < numNodes; i++) {
@@ -64,19 +85,33 @@ export class CRUDOperations {
 	 * @returns Complete topology data including storage nodes, tables, and virtual indexes
 	 */
 	async getTopology(): Promise<TopologyData> {
-		const storage_nodes = this.storage.sql.exec(`SELECT * FROM storage_nodes`).toArray() as unknown as StorageNode[];
+		const storage_nodes = this.storage.sql
+			.exec(`SELECT * FROM storage_nodes`)
+			.toArray() as unknown as StorageNode[];
 
-		const tables = this.storage.sql.exec(`SELECT * FROM tables`).toArray() as unknown as TableMetadata[];
+		const tables = this.storage.sql
+			.exec(`SELECT * FROM tables`)
+			.toArray() as unknown as TableMetadata[];
 
-		const table_shards = this.storage.sql.exec(`SELECT * FROM table_shards ORDER BY table_name, shard_id`).toArray() as unknown as TableShard[];
+		const table_shards = this.storage.sql
+			.exec(`SELECT * FROM table_shards ORDER BY table_name, shard_id`)
+			.toArray() as unknown as TableShard[];
 
-		const virtual_indexes = this.storage.sql.exec(`SELECT * FROM virtual_indexes`).toArray() as unknown as VirtualIndex[];
+		const virtual_indexes = this.storage.sql
+			.exec(`SELECT * FROM virtual_indexes`)
+			.toArray() as unknown as VirtualIndex[];
 
-		const virtual_index_entries = this.storage.sql.exec(`SELECT * FROM virtual_index_entries`).toArray() as unknown as VirtualIndexEntry[];
+		const virtual_index_entries = this.storage.sql
+			.exec(`SELECT * FROM virtual_index_entries`)
+			.toArray() as unknown as VirtualIndexEntry[];
 
-		const resharding_states = this.storage.sql.exec(`SELECT * FROM resharding_states`).toArray() as unknown as ReshardingState[];
+		const resharding_states = this.storage.sql
+			.exec(`SELECT * FROM resharding_states`)
+			.toArray() as unknown as ReshardingState[];
 
-		const async_jobs = this.storage.sql.exec(`SELECT * FROM async_jobs ORDER BY created_at DESC`).toArray() as unknown as AsyncJob[];
+		const async_jobs = this.storage.sql
+			.exec(`SELECT * FROM async_jobs ORDER BY created_at DESC`)
+			.toArray() as unknown as AsyncJob[];
 
 		return {
 			storage_nodes,
@@ -96,18 +131,22 @@ export class CRUDOperations {
 	 * @param updates - Object containing all changes to apply
 	 * @returns Success status
 	 */
-	async updateTopology(updates: TopologyUpdates): Promise<{ success: boolean }> {
+	async updateTopology(
+		updates: TopologyUpdates,
+	): Promise<{ success: boolean }> {
 		const now = Date.now();
 
 		// Add new tables
 		if (updates.tables?.add) {
 			// Get storage nodes for shard distribution
-			const nodes = this.storage.sql.exec(`SELECT node_id FROM storage_nodes WHERE status = 'active'`).toArray() as unknown as {
+			const nodes = this.storage.sql
+				.exec(`SELECT node_id FROM storage_nodes WHERE status = 'active'`)
+				.toArray() as unknown as {
 				node_id: string;
 			}[];
 
 			if (nodes.length === 0) {
-				throw new Error('No active storage nodes available');
+				throw new Error("No active storage nodes available");
 			}
 
 			for (const table of updates.tables.add) {
@@ -130,7 +169,7 @@ export class CRUDOperations {
 				for (let shardId = 0; shardId < table.num_shards; shardId++) {
 					// Simple modulo distribution across available nodes
 					const nodeIndex = shardId % nodes.length;
-					const nodeId = nodes[nodeIndex]!.node_id;
+					const nodeId = nodes[nodeIndex]?.node_id;
 
 					this.storage.sql.exec(
 						`INSERT INTO table_shards (table_name, shard_id, node_id, created_at, updated_at)
@@ -149,23 +188,26 @@ export class CRUDOperations {
 		if (updates.tables?.update) {
 			for (const table of updates.tables.update) {
 				const setClauses: string[] = [];
-				const values: any[] = [];
+				const values: SqlParam[] = [];
 
 				if (table.num_shards !== undefined) {
-					setClauses.push('num_shards = ?');
+					setClauses.push("num_shards = ?");
 					values.push(table.num_shards);
 				}
 				if (table.block_size !== undefined) {
-					setClauses.push('block_size = ?');
+					setClauses.push("block_size = ?");
 					values.push(table.block_size);
 				}
 
 				if (setClauses.length > 0) {
 					// Always update the updated_at timestamp
-					setClauses.push('updated_at = ?');
+					setClauses.push("updated_at = ?");
 					values.push(now);
 					values.push(table.table_name);
-					this.storage.sql.exec(`UPDATE tables SET ${setClauses.join(', ')} WHERE table_name = ?`, ...values);
+					this.storage.sql.exec(
+						`UPDATE tables SET ${setClauses.join(", ")} WHERE table_name = ?`,
+						...values,
+					);
 				}
 			}
 		}
@@ -173,7 +215,10 @@ export class CRUDOperations {
 		// Remove tables
 		if (updates.tables?.remove) {
 			for (const table_name of updates.tables.remove) {
-				this.storage.sql.exec(`DELETE FROM tables WHERE table_name = ?`, table_name);
+				this.storage.sql.exec(
+					`DELETE FROM tables WHERE table_name = ?`,
+					table_name,
+				);
 			}
 		}
 

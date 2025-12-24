@@ -1,28 +1,28 @@
 export const testQueries = [
-  // INSERT statements
-  "INSERT INTO users (name, email, age) VALUES ('John Doe', 'john@example.com', 30);",
-  "INSERT INTO products (id, name, price, category_id) VALUES (1, 'Laptop', 999.99, 2), (2, 'Mouse', 25.50, 3);",
-  "INSERT INTO employees (name, department, salary, hire_date, is_active) VALUES ('Alice Smith', 'Engineering', 85000.00, '2024-03-15', 1), ('Bob Johnson', 'Marketing', 62000.50, '2024-01-20', 1), ('Carol Wilson', 'HR', 58000.75, '2023-11-10', 0), ('David Brown', 'Engineering', 92000.00, '2024-02-05', 1);",
-  
-  // CREATE TABLE statements
-  "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT UNIQUE, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);",
-  "CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), total DECIMAL(10,2), status TEXT CHECK(status IN ('pending', 'completed', 'cancelled')));",
-  
-  // ALTER statement
-  "ALTER TABLE users ADD COLUMN phone_number TEXT;",
-  
-  // SELECT statements
-  "SELECT u.name, u.email, COUNT(o.id) as order_count FROM users u LEFT JOIN orders o ON u.id = o.user_id WHERE u.created_at > '2024-01-01' GROUP BY u.id HAVING COUNT(o.id) > 0 ORDER BY order_count DESC LIMIT 10;",
-  "SELECT * FROM products WHERE price BETWEEN 10.00 AND 100.00 AND category_id IN (SELECT id FROM categories WHERE name LIKE '%electronics%');",
-  
-  // UPDATE statement
-  "UPDATE users SET email = 'newemail@example.com', phone_number = '+1234567890' WHERE id = 1 AND name = 'John Doe';",
-  
-  // Multi-query statement (2 selects)
-  "SELECT COUNT(*) FROM users; SELECT AVG(price) FROM products;",
-  
-  // Very complicated multi-query
-  `WITH RECURSIVE category_tree AS (
+	// INSERT statements
+	"INSERT INTO users (name, email, age) VALUES ('John Doe', 'john@example.com', 30);",
+	"INSERT INTO products (id, name, price, category_id) VALUES (1, 'Laptop', 999.99, 2), (2, 'Mouse', 25.50, 3);",
+	"INSERT INTO employees (name, department, salary, hire_date, is_active) VALUES ('Alice Smith', 'Engineering', 85000.00, '2024-03-15', 1), ('Bob Johnson', 'Marketing', 62000.50, '2024-01-20', 1), ('Carol Wilson', 'HR', 58000.75, '2023-11-10', 0), ('David Brown', 'Engineering', 92000.00, '2024-02-05', 1);",
+
+	// CREATE TABLE statements
+	"CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT UNIQUE, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);",
+	"CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), total DECIMAL(10,2), status TEXT CHECK(status IN ('pending', 'completed', 'cancelled')));",
+
+	// ALTER statement
+	"ALTER TABLE users ADD COLUMN phone_number TEXT;",
+
+	// SELECT statements
+	"SELECT u.name, u.email, COUNT(o.id) as order_count FROM users u LEFT JOIN orders o ON u.id = o.user_id WHERE u.created_at > '2024-01-01' GROUP BY u.id HAVING COUNT(o.id) > 0 ORDER BY order_count DESC LIMIT 10;",
+	"SELECT * FROM products WHERE price BETWEEN 10.00 AND 100.00 AND category_id IN (SELECT id FROM categories WHERE name LIKE '%electronics%');",
+
+	// UPDATE statement
+	"UPDATE users SET email = 'newemail@example.com', phone_number = '+1234567890' WHERE id = 1 AND name = 'John Doe';",
+
+	// Multi-query statement (2 selects)
+	"SELECT COUNT(*) FROM users; SELECT AVG(price) FROM products;",
+
+	// Very complicated multi-query
+	`WITH RECURSIVE category_tree AS (
     SELECT id, name, parent_id, 0 as level 
     FROM categories 
     WHERE parent_id IS NULL
@@ -84,5 +84,5 @@ export const testQueries = [
       'affected_rows', changes(),
       'operation_type', 'theme_update',
       'criteria', 'activity_based'
-    ) as details;`
+    ) as details;`,
 ];

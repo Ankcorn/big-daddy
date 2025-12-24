@@ -1,7 +1,10 @@
-import type { CreateIndexStatement, SelectStatement } from '@databases/sqlite-ast';
-import type { QueryResult, QueryHandlerContext } from '../types';
-import type { IndexJob } from '../../queue/types';
-import { getCachedQueryPlanData } from '../utils/write';
+import type {
+	CreateIndexStatement,
+	SelectStatement,
+} from "@databases/sqlite-ast";
+import type { IndexJob } from "../../queue/types";
+import type { QueryHandlerContext, QueryResult } from "../types";
+import { getCachedQueryPlanData } from "../utils/write";
 
 /**
  * Enqueue an index job to the queue
@@ -14,11 +17,14 @@ import { getCachedQueryPlanData } from '../utils/write';
  *
  * In production, queue processing happens automatically via Cloudflare's infrastructure.
  */
-async function enqueueIndexJob(context: QueryHandlerContext, job: IndexJob): Promise<void> {
+async function enqueueIndexJob(
+	context: QueryHandlerContext,
+	job: IndexJob,
+): Promise<void> {
 	const { indexQueue, env } = context;
 
 	if (!indexQueue) {
-		console.warn('INDEX_QUEUE not available, skipping index job:', job.type);
+		console.warn("INDEX_QUEUE not available, skipping index job:", job.type);
 		return;
 	}
 
@@ -30,13 +36,13 @@ async function enqueueIndexJob(context: QueryHandlerContext, job: IndexJob): Pro
 		// This is detected by checking if env was provided (only happens in tests)
 		if (env) {
 			// Dynamically import queueHandler to avoid circular dependencies
-			const { queueHandler } = await import('../../../queue-consumer');
+			const { queueHandler } = await import("../../../queue-consumer");
 
 			// Simulate queue batch with this single message
 			const jobCorrelationId = job.correlation_id || crypto.randomUUID();
 			await queueHandler(
 				{
-					queue: 'vitess-index-jobs',
+					queue: "vitess-index-jobs",
 					messages: [
 						{
 							id: `test-${Date.now()}-${Math.random()}`,
@@ -66,7 +72,10 @@ async function enqueueIndexJob(context: QueryHandlerContext, job: IndexJob): Pro
  * 4. Enqueues an IndexBuildJob to the queue for async processing (builds virtual index metadata)
  * 5. Returns immediately to the client (non-blocking)
  */
-export async function handleCreateIndex(statement: CreateIndexStatement, context: QueryHandlerContext): Promise<QueryResult> {
+export async function handleCreateIndex(
+	statement: CreateIndexStatement,
+	context: QueryHandlerContext,
+): Promise<QueryResult> {
 	const indexName = statement.name.name;
 	const tableName = statement.table.name;
 
@@ -81,19 +90,28 @@ export async function handleCreateIndex(statement: CreateIndexStatement, context
 	// Use getCachedQueryPlanData to get active shards (same as CRUD operations)
 	// This ensures consistent handling of shard status filtering
 	const dummySelect = {
-		type: 'SelectStatement',
-		select: [{ type: 'SelectClause', expression: { type: 'Identifier', name: '*' } }],
-		from: { type: 'Identifier', name: tableName },
+		type: "SelectStatement",
+		select: [
+			{ type: "SelectClause", expression: { type: "Identifier", name: "*" } },
+		],
+		from: { type: "Identifier", name: tableName },
 	} as SelectStatement;
-	const { planData } = await getCachedQueryPlanData(context, tableName, dummySelect, []);
+	const { planData } = await getCachedQueryPlanData(
+		context,
+		tableName,
+		dummySelect,
+		[],
+	);
 
 	// Dedupe by node_id - SQLite index only needs to be created once per storage node
-	const uniqueNodeIds = [...new Set(planData.shardsToQuery.map(s => s.node_id))];
+	const uniqueNodeIds = [
+		...new Set(planData.shardsToQuery.map((s) => s.node_id)),
+	];
 
 	// Build the CREATE INDEX SQL statement
-	const uniqueClause = statement.unique ? 'UNIQUE ' : '';
-	const ifNotExistsClause = statement.ifNotExists ? 'IF NOT EXISTS ' : '';
-	const columnList = columns.join(', ');
+	const uniqueClause = statement.unique ? "UNIQUE " : "";
+	const ifNotExistsClause = statement.ifNotExists ? "IF NOT EXISTS " : "";
+	const columnList = columns.join(", ");
 	const createIndexSQL = `CREATE ${uniqueClause}INDEX ${ifNotExistsClause}${indexName} ON ${tableName}(${columnList})`;
 
 	// Create SQLite indexes on each unique storage node in parallel
@@ -110,7 +128,10 @@ export async function handleCreateIndex(statement: CreateIndexStatement, context
 				});
 			} catch (error) {
 				// If IF NOT EXISTS is specified, ignore "already exists" errors
-				if (statement.ifNotExists && (error as Error).message.includes('already exists')) {
+				if (
+					statement.ifNotExists &&
+					(error as Error).message.includes("already exists")
+				) {
 					return;
 				}
 				throw error;
@@ -120,25 +141,30 @@ export async function handleCreateIndex(statement: CreateIndexStatement, context
 
 	// Create the virtual index in Topology with 'building' status
 	// Virtual index provides shard-level routing optimization
-	const indexType = statement.unique ? 'unique' : 'hash';
-	const result = await topologyStub.createVirtualIndex(indexName, tableName, columns, indexType);
+	const indexType = statement.unique ? "unique" : "hash";
+	const result = await topologyStub.createVirtualIndex(
+		indexName,
+		tableName,
+		columns,
+		indexType,
+	);
 
 	if (!result.success) {
 		// If IF NOT EXISTS is specified and index already exists, return success
-		if (statement.ifNotExists && result.error?.includes('already exists')) {
+		if (statement.ifNotExists && result.error?.includes("already exists")) {
 			return {
 				rows: [],
 				rowsAffected: 0,
 			};
 		}
 
-		throw new Error(result.error || 'Failed to create index');
+		throw new Error(result.error || "Failed to create index");
 	}
 
 	// Enqueue index build job for background processing
 	// This populates the virtual index metadata with existing data
 	await enqueueIndexJob(context, {
-		type: 'build_index',
+		type: "build_index",
 		database_id: databaseId,
 		table_name: tableName,
 		columns: columns,

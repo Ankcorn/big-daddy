@@ -1,14 +1,19 @@
-import type { UpdateStatement, SelectStatement } from '@databases/sqlite-ast';
-import { logger } from '../../../logger';
-import type { QueryResult, QueryHandlerContext, ShardInfo } from '../types';
-import { mergeResultsSimple } from '../utils';
+import type { SelectStatement, UpdateStatement } from "@databases/sqlite-ast";
+import { logger } from "../../../logger";
+import type {
+	QueryHandlerContext,
+	QueryResult,
+	ShardInfo,
+	SqlParam,
+} from "../types";
+import { mergeResultsSimple } from "../utils";
+import { prepareIndexMaintenanceQueries } from "../utils/index-maintenance";
 import {
 	executeOnShards,
-	logWriteIfResharding,
-	invalidateCacheForWrite,
 	getCachedQueryPlanData,
-} from '../utils/write';
-import { prepareIndexMaintenanceQueries } from '../utils/index-maintenance';
+	invalidateCacheForWrite,
+	logWriteIfResharding,
+} from "../utils/write";
 
 /**
  * Build SELECT statement for capturing indexed columns in UPDATE rows
@@ -20,14 +25,16 @@ function buildSelectForIndexedColumns(
 	const indexedColumns = new Set<string>();
 	for (const index of virtualIndexes) {
 		const columns = JSON.parse(index.columns) as string[];
-		columns.forEach((col) => indexedColumns.add(col));
+		for (const col of columns) {
+			indexedColumns.add(col);
+		}
 	}
 
 	return {
-		type: 'SelectStatement',
+		type: "SelectStatement",
 		select: [...indexedColumns].map((column) => ({
-			type: 'SelectClause',
-			expression: { type: 'Identifier', name: column },
+			type: "SelectClause",
+			expression: { type: "Identifier", name: column },
 		})),
 		from: updateStatement.table,
 		where: updateStatement.where,
@@ -37,15 +44,21 @@ function buildSelectForIndexedColumns(
 /**
  * Count parameter placeholders in an AST node
  */
-function countPlaceholders(node: any): number {
+function countPlaceholders(node: unknown): number {
 	if (!node) return 0;
-	if (node.type === 'Placeholder') return 1;
+	if (
+		typeof node === "object" &&
+		node !== null &&
+		"type" in node &&
+		node.type === "Placeholder"
+	)
+		return 1;
 	let count = 0;
 	if (Array.isArray(node)) {
 		for (const item of node) {
 			count += countPlaceholders(item);
 		}
-	} else if (typeof node === 'object') {
+	} else if (typeof node === "object" && node !== null) {
 		for (const value of Object.values(node)) {
 			count += countPlaceholders(value);
 		}
@@ -68,7 +81,7 @@ function countPlaceholders(node: any): number {
 export async function handleUpdate(
 	statement: UpdateStatement,
 	query: string,
-	params: any[],
+	params: SqlParam[],
 	context: QueryHandlerContext,
 ): Promise<QueryResult> {
 	const tableName = statement.table.name;
@@ -81,7 +94,7 @@ export async function handleUpdate(
 		params,
 	);
 
-	logger.info`Query plan determined for UPDATE ${{shardsSelected: planData.shardsToQuery.length}} ${{indexesUsed: planData.virtualIndexes.length}}`;
+	logger.info`Query plan determined for UPDATE ${{ shardsSelected: planData.shardsToQuery.length }} ${{ indexesUsed: planData.virtualIndexes.length }}`;
 
 	const shardsToQuery = planData.shardsToQuery;
 
@@ -90,17 +103,22 @@ export async function handleUpdate(
 
 	// STEP 3: Prepare queries
 	// SELECT statements only use WHERE clause parameters; UPDATE uses all parameters
-	const selectStatement = planData.virtualIndexes.length > 0
-		? buildSelectForIndexedColumns(statement, planData.virtualIndexes)
-		: undefined;
+	const selectStatement =
+		planData.virtualIndexes.length > 0
+			? buildSelectForIndexedColumns(statement, planData.virtualIndexes)
+			: undefined;
 
 	// Extract only WHERE clause params for the SELECT (skip SET clause params)
 	// UPDATE params order: SET values first, then WHERE values
 	const setPlaceholderCount = countPlaceholders(statement.set);
 	const wherePlaceholderCount = countPlaceholders(statement.where);
-	const selectParams = selectStatement && wherePlaceholderCount > 0
-		? params.slice(setPlaceholderCount, setPlaceholderCount + wherePlaceholderCount)
-		: [];
+	const selectParams =
+		selectStatement && wherePlaceholderCount > 0
+			? params.slice(
+					setPlaceholderCount,
+					setPlaceholderCount + wherePlaceholderCount,
+				)
+			: [];
 
 	const queries = prepareIndexMaintenanceQueries(
 		planData.virtualIndexes.length > 0,
@@ -113,7 +131,7 @@ export async function handleUpdate(
 	// STEP 4: Execute on shards
 	const execResult = await executeOnShards(context, shardsToQuery, queries);
 
-	logger.info`Shard execution completed for UPDATE ${{shardsQueried: shardsToQuery.length}}`;
+	logger.info`Shard execution completed for UPDATE ${{ shardsQueried: shardsToQuery.length }}`;
 
 	// STEP 5: Synchronous index maintenance
 	if (planData.virtualIndexes.length > 0) {
@@ -124,18 +142,31 @@ export async function handleUpdate(
 		const resultsArray = execResult.results as QueryResult[][];
 		for (let i = 0; i < shardsToQuery.length; i++) {
 			const [selectBefore, , selectAfter] = resultsArray[i]!;
-			const oldRows = (selectBefore as any).rows || [];
-			const newRows = (selectAfter as any).rows || [];
-			const shardId = shardsToQuery[i]!.shard_id;
+			const oldRows = (selectBefore?.rows || []) as Record<string, SqlParam>[];
+			const newRows = (selectAfter?.rows || []) as Record<string, SqlParam>[];
+			const shard = shardsToQuery[i];
+			if (!shard) continue;
+			const shardId = shard.shard_id;
 
 			if (oldRows.length > 0 || newRows.length > 0) {
-				await topologyStub.maintainIndexesForUpdate(oldRows, newRows, planData.virtualIndexes, shardId);
+				await topologyStub.maintainIndexesForUpdate(
+					oldRows,
+					newRows,
+					planData.virtualIndexes,
+					shardId,
+				);
 			}
 		}
 	}
 
 	// STEP 6: Invalidate cache entries for write operation
-	invalidateCacheForWrite(context, tableName, statement, planData.virtualIndexes, params);
+	invalidateCacheForWrite(
+		context,
+		tableName,
+		statement,
+		planData.virtualIndexes,
+		params,
+	);
 
 	// STEP 7: Merge results from all shards
 	let results: QueryResult[];
@@ -159,7 +190,7 @@ export async function handleUpdate(
 		duration: 0,
 	}));
 
-	logger.info`UPDATE query completed ${{shardsQueried: shardsToQuery.length}} ${{rowsAffected: result.rowsAffected}}`;
+	logger.info`UPDATE query completed ${{ shardsQueried: shardsToQuery.length }} ${{ rowsAffected: result.rowsAffected }}`;
 
 	return result;
 }

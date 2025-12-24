@@ -1,16 +1,16 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { env } from 'cloudflare:test';
-import { createConductor } from '../../src/index';
+import { env } from "cloudflare:test";
+import { describe, expect, it } from "vitest";
+import { createConductor } from "../../src/index";
 
-describe('TopologyCache', () => {
+describe("TopologyCache", () => {
 	async function initializeTopology(dbId: string, numNodes: number = 2) {
 		const topologyId = env.TOPOLOGY.idFromName(dbId);
 		const topologyStub = env.TOPOLOGY.get(topologyId);
 		await topologyStub.create(numNodes);
 	}
 
-	it('should cache query plan data for SELECT queries with WHERE clause', async () => {
-		const dbId = 'test-cache-select';
+	it("should cache query plan data for SELECT queries with WHERE clause", async () => {
+		const dbId = "test-cache-select";
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, crypto.randomUUID(), env);
@@ -20,8 +20,8 @@ describe('TopologyCache', () => {
 		await conductor.sql`CREATE INDEX idx_email ON users(email)`;
 
 		// Insert test data
-		await conductor.sql`INSERT INTO users (id, email, name) VALUES (1, ${'alice@example.com'}, ${'Alice'})`;
-		await conductor.sql`INSERT INTO users (id, email, name) VALUES (2, ${'bob@example.com'}, ${'Bob'})`;
+		await conductor.sql`INSERT INTO users (id, email, name) VALUES (1, ${"alice@example.com"}, ${"Alice"})`;
+		await conductor.sql`INSERT INTO users (id, email, name) VALUES (2, ${"bob@example.com"}, ${"Bob"})`;
 
 		// Clear cache before testing to get clean stats
 		conductor.clearCache();
@@ -29,7 +29,7 @@ describe('TopologyCache', () => {
 		// First query - should be a cache miss
 		const result1 = await conductor.sql`SELECT * FROM users WHERE id = ${1}`;
 		expect(result1.rows).toHaveLength(1);
-		expect(result1.rows[0]).toMatchObject({ id: 1, name: 'Alice' });
+		expect(result1.rows[0]).toMatchObject({ id: 1, name: "Alice" });
 
 		// Verify cache stats in the result
 		expect(result1.cacheStats).toBeDefined();
@@ -40,7 +40,7 @@ describe('TopologyCache', () => {
 		// Second query with same predicate - should be a cache hit
 		const result2 = await conductor.sql`SELECT * FROM users WHERE id = ${1}`;
 		expect(result2.rows).toHaveLength(1);
-		expect(result2.rows[0]).toMatchObject({ id: 1, name: 'Alice' });
+		expect(result2.rows[0]).toMatchObject({ id: 1, name: "Alice" });
 
 		// Verify cache hit in the result!
 		expect(result2.cacheStats?.cacheHit).toBe(true); // Second query is a HIT!
@@ -51,7 +51,7 @@ describe('TopologyCache', () => {
 		// Third query with different predicate - should be a cache miss
 		const result3 = await conductor.sql`SELECT * FROM users WHERE id = ${2}`;
 		expect(result3.rows).toHaveLength(1);
-		expect(result3.rows[0]).toMatchObject({ id: 2, name: 'Bob' });
+		expect(result3.rows[0]).toMatchObject({ id: 2, name: "Bob" });
 
 		// Verify cache miss for different predicate
 		expect(result3.cacheStats?.cacheHit).toBe(false);
@@ -60,12 +60,11 @@ describe('TopologyCache', () => {
 		expect(result3.cacheStats?.cacheSize).toBe(2); // Now have 2 cached entries
 	});
 
-	it('should invalidate cache after INSERT operations', async () => {
-		const dbId = 'test-cache-insert-invalidation';
+	it("should invalidate cache after INSERT operations", async () => {
+		const dbId = "test-cache-insert-invalidation";
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, crypto.randomUUID(), env);
-
 
 		// Create table
 		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL)`;
@@ -73,7 +72,8 @@ describe('TopologyCache', () => {
 		conductor.clearCache();
 
 		// First query - cache miss
-		const result1 = await conductor.sql`SELECT * FROM products WHERE id = ${100}`;
+		const result1 =
+			await conductor.sql`SELECT * FROM products WHERE id = ${100}`;
 		expect(result1.rows).toHaveLength(0);
 
 		let stats = conductor.getCacheStats();
@@ -88,54 +88,53 @@ describe('TopologyCache', () => {
 		expect(stats.size).toBe(1);
 
 		// Insert new row - should invalidate cache
-		await conductor.sql`INSERT INTO products (id, name, price) VALUES (${100}, ${'Widget'}, ${9.99})`;
+		await conductor.sql`INSERT INTO products (id, name, price) VALUES (${100}, ${"Widget"}, ${9.99})`;
 
 		stats = conductor.getCacheStats();
 		expect(stats.size).toBe(0); // Cache should be invalidated!
 
 		// Query again - should be a cache miss (cache was invalidated)
-		const result2 = await conductor.sql`SELECT * FROM products WHERE id = ${100}`;
+		const result2 =
+			await conductor.sql`SELECT * FROM products WHERE id = ${100}`;
 		expect(result2.rows).toHaveLength(1);
-		expect(result2.rows[0]).toMatchObject({ id: 100, name: 'Widget' });
+		expect(result2.rows[0]).toMatchObject({ id: 100, name: "Widget" });
 
 		stats = conductor.getCacheStats();
 		expect(stats.misses).toBe(2); // Original miss + miss after invalidation
 		expect(stats.size).toBe(1); // Now cached again
 	});
 
-	it('should invalidate cache after UPDATE operations', async () => {
-		const dbId = 'test-cache-update-invalidation';
+	it("should invalidate cache after UPDATE operations", async () => {
+		const dbId = "test-cache-update-invalidation";
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
-
 		// Create table and insert data
 		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL)`;
-		await conductor.sql`INSERT INTO products (id, name, price) VALUES (${1}, ${'Widget'}, ${9.99})`;
+		await conductor.sql`INSERT INTO products (id, name, price) VALUES (${1}, ${"Widget"}, ${9.99})`;
 
 		// First query - cache miss
 		const result1 = await conductor.sql`SELECT * FROM products WHERE id = ${1}`;
-		expect(result1.rows[0]).toMatchObject({ name: 'Widget', price: 9.99 });
+		expect(result1.rows[0]).toMatchObject({ name: "Widget", price: 9.99 });
 
 		// Update the row - should invalidate cache
 		await conductor.sql`UPDATE products SET price = ${19.99} WHERE id = ${1}`;
 
 		// Query again - should see the updated price
 		const result2 = await conductor.sql`SELECT * FROM products WHERE id = ${1}`;
-		expect(result2.rows[0]).toMatchObject({ name: 'Widget', price: 19.99 });
+		expect(result2.rows[0]).toMatchObject({ name: "Widget", price: 19.99 });
 	});
 
-	it('should invalidate cache after DELETE operations', async () => {
-		const dbId = 'test-cache-delete-invalidation';
+	it("should invalidate cache after DELETE operations", async () => {
+		const dbId = "test-cache-delete-invalidation";
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
-
 		// Create table and insert data
 		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL)`;
-		await conductor.sql`INSERT INTO products (id, name, price) VALUES (${1}, ${'Widget'}, ${9.99})`;
+		await conductor.sql`INSERT INTO products (id, name, price) VALUES (${1}, ${"Widget"}, ${9.99})`;
 
 		// First query - cache miss
 		const result1 = await conductor.sql`SELECT * FROM products WHERE id = ${1}`;
@@ -149,16 +148,15 @@ describe('TopologyCache', () => {
 		expect(result2.rows).toHaveLength(0);
 	});
 
-	it('should not cache full table scans', async () => {
-		const dbId = 'test-cache-full-scan';
+	it("should not cache full table scans", async () => {
+		const dbId = "test-cache-full-scan";
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
-
 		// Create table and insert data
 		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL)`;
-		await conductor.sql`INSERT INTO products (id, name, price) VALUES (${1}, ${'Widget'}, ${9.99})`;
+		await conductor.sql`INSERT INTO products (id, name, price) VALUES (${1}, ${"Widget"}, ${9.99})`;
 
 		conductor.clearCache();
 
@@ -181,108 +179,111 @@ describe('TopologyCache', () => {
 		expect(stats.misses).toBe(0);
 	});
 
-	it('should cache queries with index-based WHERE clauses', async () => {
-		const dbId = 'test-cache-index-query';
+	it("should cache queries with index-based WHERE clauses", async () => {
+		const dbId = "test-cache-index-query";
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, crypto.randomUUID(), env);
-
 
 		// Create table and index
 		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, name TEXT)`;
 		await conductor.sql`CREATE INDEX idx_email ON users(email)`;
 
 		// Insert test data
-		await conductor.sql`INSERT INTO users (id, email, name) VALUES (${1}, ${'alice@example.com'}, ${'Alice'})`;
-		await conductor.sql`INSERT INTO users (id, email, name) VALUES (${2}, ${'bob@example.com'}, ${'Bob'})`;
+		await conductor.sql`INSERT INTO users (id, email, name) VALUES (${1}, ${"alice@example.com"}, ${"Alice"})`;
+		await conductor.sql`INSERT INTO users (id, email, name) VALUES (${2}, ${"bob@example.com"}, ${"Bob"})`;
 
 		conductor.clearCache();
 
 		// Query by indexed column - should be cached
-		const result1 = await conductor.sql`SELECT * FROM users WHERE email = ${'alice@example.com'}`;
+		const result1 =
+			await conductor.sql`SELECT * FROM users WHERE email = ${"alice@example.com"}`;
 		expect(result1.rows).toHaveLength(1);
-		expect(result1.rows[0]).toMatchObject({ name: 'Alice' });
+		expect(result1.rows[0]).toMatchObject({ name: "Alice" });
 
 		let stats = conductor.getCacheStats();
 		expect(stats.misses).toBe(1);
 		expect(stats.hits).toBe(0);
 
 		// Same query again - should be a cache hit
-		const result2 = await conductor.sql`SELECT * FROM users WHERE email = ${'alice@example.com'}`;
+		const result2 =
+			await conductor.sql`SELECT * FROM users WHERE email = ${"alice@example.com"}`;
 		expect(result2.rows).toHaveLength(1);
-		expect(result2.rows[0]).toMatchObject({ name: 'Alice' });
+		expect(result2.rows[0]).toMatchObject({ name: "Alice" });
 
 		stats = conductor.getCacheStats();
 		expect(stats.hits).toBe(1); // Cache hit!
 		expect(stats.misses).toBe(1);
 	});
 
-	it('should cache queries with composite index predicates', async () => {
-		const dbId = 'test-cache-composite-index';
+	it("should cache queries with composite index predicates", async () => {
+		const dbId = "test-cache-composite-index";
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, crypto.randomUUID(), env);
-
 
 		// Create table and composite index
 		await conductor.sql`CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, status TEXT, total REAL)`;
 		await conductor.sql`CREATE INDEX idx_user_status ON orders(user_id, status)`;
 
 		// Insert test data
-		await conductor.sql`INSERT INTO orders (id, user_id, status, total) VALUES (${1}, ${100}, ${'pending'}, ${99.99})`;
-		await conductor.sql`INSERT INTO orders (id, user_id, status, total) VALUES (${2}, ${100}, ${'completed'}, ${149.99})`;
+		await conductor.sql`INSERT INTO orders (id, user_id, status, total) VALUES (${1}, ${100}, ${"pending"}, ${99.99})`;
+		await conductor.sql`INSERT INTO orders (id, user_id, status, total) VALUES (${2}, ${100}, ${"completed"}, ${149.99})`;
 
 		// Query by composite index - should be cached
-		const result1 = await conductor.sql`SELECT * FROM orders WHERE user_id = ${100} AND status = ${'pending'}`;
+		const result1 =
+			await conductor.sql`SELECT * FROM orders WHERE user_id = ${100} AND status = ${"pending"}`;
 		expect(result1.rows).toHaveLength(1);
 		expect(result1.rows[0]).toMatchObject({ id: 1, total: 99.99 });
 
 		// Same query again - should be a cache hit
-		const result2 = await conductor.sql`SELECT * FROM orders WHERE user_id = ${100} AND status = ${'pending'}`;
+		const result2 =
+			await conductor.sql`SELECT * FROM orders WHERE user_id = ${100} AND status = ${"pending"}`;
 		expect(result2.rows).toHaveLength(1);
 		expect(result2.rows[0]).toMatchObject({ id: 1, total: 99.99 });
 	});
 
-	it('should invalidate index cache when indexed columns are updated', async () => {
-		const dbId = 'test-cache-index-invalidation';
+	it("should invalidate index cache when indexed columns are updated", async () => {
+		const dbId = "test-cache-index-invalidation";
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, crypto.randomUUID(), env);
-
 
 		// Create table and index
 		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, name TEXT)`;
 		await conductor.sql`CREATE INDEX idx_email ON users(email)`;
 
 		// Insert test data
-		await conductor.sql`INSERT INTO users (id, email, name) VALUES (${1}, ${'alice@example.com'}, ${'Alice'})`;
+		await conductor.sql`INSERT INTO users (id, email, name) VALUES (${1}, ${"alice@example.com"}, ${"Alice"})`;
 
 		// Query by indexed column - should be cached
-		const result1 = await conductor.sql`SELECT * FROM users WHERE email = ${'alice@example.com'}`;
+		const result1 =
+			await conductor.sql`SELECT * FROM users WHERE email = ${"alice@example.com"}`;
 		expect(result1.rows).toHaveLength(1);
 
 		// Update the indexed column - should invalidate index cache
-		await conductor.sql`UPDATE users SET email = ${'alice.new@example.com'} WHERE id = ${1}`;
+		await conductor.sql`UPDATE users SET email = ${"alice.new@example.com"} WHERE id = ${1}`;
 
 		// Query with old email - should see no rows
-		const result2 = await conductor.sql`SELECT * FROM users WHERE email = ${'alice@example.com'}`;
+		const result2 =
+			await conductor.sql`SELECT * FROM users WHERE email = ${"alice@example.com"}`;
 		expect(result2.rows).toHaveLength(0);
 
 		// Query with new email - should see the row
-		const result3 = await conductor.sql`SELECT * FROM users WHERE email = ${'alice.new@example.com'}`;
+		const result3 =
+			await conductor.sql`SELECT * FROM users WHERE email = ${"alice.new@example.com"}`;
 		expect(result3.rows).toHaveLength(1);
 	});
 
-	it('should handle cache expiration with TTL', async () => {
-		const dbId = 'test-cache-ttl';
+	it("should handle cache expiration with TTL", async () => {
+		const dbId = "test-cache-ttl";
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
-
 		// Create table
 		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT)`;
-		await conductor.sql`INSERT INTO products (id, name) VALUES (${1}, ${'Widget'})`;
+		await conductor.sql`INSERT INTO products (id, name) VALUES (${1}, ${"Widget"})`;
 
 		conductor.clearCache();
 
@@ -305,18 +306,17 @@ describe('TopologyCache', () => {
 		// the cache implementation itself.
 	});
 
-	it('should demonstrate cache performance with multiple queries', async () => {
-		const dbId = 'test-cache-performance';
+	it("should demonstrate cache performance with multiple queries", async () => {
+		const dbId = "test-cache-performance";
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
-
 		// Create table
 		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)`;
-		await conductor.sql`INSERT INTO users (id, name, email) VALUES (${1}, ${'Alice'}, ${'alice@example.com'})`;
-		await conductor.sql`INSERT INTO users (id, name, email) VALUES (${2}, ${'Bob'}, ${'bob@example.com'})`;
-		await conductor.sql`INSERT INTO users (id, name, email) VALUES (${3}, ${'Charlie'}, ${'charlie@example.com'})`;
+		await conductor.sql`INSERT INTO users (id, name, email) VALUES (${1}, ${"Alice"}, ${"alice@example.com"})`;
+		await conductor.sql`INSERT INTO users (id, name, email) VALUES (${2}, ${"Bob"}, ${"bob@example.com"})`;
+		await conductor.sql`INSERT INTO users (id, name, email) VALUES (${3}, ${"Charlie"}, ${"charlie@example.com"})`;
 
 		conductor.clearCache();
 
@@ -333,14 +333,14 @@ describe('TopologyCache', () => {
 
 		// Verify individual query cache stats
 		expect(r1.cacheStats?.cacheHit).toBe(false); // miss
-		expect(r2.cacheStats?.cacheHit).toBe(true);  // hit!
+		expect(r2.cacheStats?.cacheHit).toBe(true); // hit!
 		expect(r3.cacheStats?.cacheHit).toBe(false); // miss
-		expect(r4.cacheStats?.cacheHit).toBe(true);  // hit!
-		expect(r5.cacheStats?.cacheHit).toBe(true);  // hit!
+		expect(r4.cacheStats?.cacheHit).toBe(true); // hit!
+		expect(r5.cacheStats?.cacheHit).toBe(true); // hit!
 		expect(r6.cacheStats?.cacheHit).toBe(false); // miss
-		expect(r7.cacheStats?.cacheHit).toBe(true);  // hit!
-		expect(r8.cacheStats?.cacheHit).toBe(true);  // hit!
-		expect(r9.cacheStats?.cacheHit).toBe(true);  // hit!
+		expect(r7.cacheStats?.cacheHit).toBe(true); // hit!
+		expect(r8.cacheStats?.cacheHit).toBe(true); // hit!
+		expect(r9.cacheStats?.cacheHit).toBe(true); // hit!
 
 		// Verify final stats
 		const finalStats = r9.cacheStats!;
@@ -349,19 +349,19 @@ describe('TopologyCache', () => {
 		expect(finalStats.cacheSize).toBe(3); // 3 cached entries
 
 		// Cache hit rate should be 66.6% (6 hits / 9 total)
-		const hitRate = finalStats.totalHits / (finalStats.totalHits + finalStats.totalMisses);
+		const hitRate =
+			finalStats.totalHits / (finalStats.totalHits + finalStats.totalMisses);
 		expect(hitRate).toBeCloseTo(0.667, 2);
 	});
 
-	it('should include cache stats in every SELECT query result', async () => {
-		const dbId = 'test-cache-stats-in-result';
+	it("should include cache stats in every SELECT query result", async () => {
+		const dbId = "test-cache-stats-in-result";
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
-
 		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT)`;
-		await conductor.sql`INSERT INTO products (id, name) VALUES (${1}, ${'Widget'})`;
+		await conductor.sql`INSERT INTO products (id, name) VALUES (${1}, ${"Widget"})`;
 
 		conductor.clearCache();
 
@@ -369,16 +369,16 @@ describe('TopologyCache', () => {
 		const result = await conductor.sql`SELECT * FROM products WHERE id = ${1}`;
 
 		expect(result.cacheStats).toBeDefined();
-		expect(result.cacheStats).toHaveProperty('cacheHit');
-		expect(result.cacheStats).toHaveProperty('totalHits');
-		expect(result.cacheStats).toHaveProperty('totalMisses');
-		expect(result.cacheStats).toHaveProperty('cacheSize');
+		expect(result.cacheStats).toHaveProperty("cacheHit");
+		expect(result.cacheStats).toHaveProperty("totalHits");
+		expect(result.cacheStats).toHaveProperty("totalMisses");
+		expect(result.cacheStats).toHaveProperty("cacheSize");
 
 		// This query should be a cache miss (first time)
-		expect(result.cacheStats!.cacheHit).toBe(false);
+		expect(result.cacheStats?.cacheHit).toBe(false);
 
 		// Query again - should be a cache hit
 		const result2 = await conductor.sql`SELECT * FROM products WHERE id = ${1}`;
-		expect(result2.cacheStats!.cacheHit).toBe(true);
+		expect(result2.cacheStats?.cacheHit).toBe(true);
 	});
 });

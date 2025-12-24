@@ -1,6 +1,6 @@
-import type { Statement, SelectStatement, InsertStatement, UpdateStatement, DeleteStatement } from '@databases/sqlite-ast';
-import type { Topology, QueryPlanData } from '../topology/index';
-import type { Storage } from '../storage';
+import type { Storage } from "../storage";
+import type { Topology } from "../topology/index";
+import type { CacheStats, TopologyCache } from "../utils/topology-cache";
 
 /**
  * SQL parameter type - only scalar values are supported by SQLite
@@ -13,36 +13,46 @@ export type SqlParam = string | number | boolean | null;
 export class TableAlreadyExistsError extends Error {
 	constructor(public tableName: string) {
 		super(`Table '${tableName}' already exists in topology`);
-		this.name = 'TableAlreadyExistsError';
+		this.name = "TableAlreadyExistsError";
 	}
 }
 
 export class TopologyFetchError extends Error {
-	public cause?: unknown;
+	public override cause?: unknown;
 
-	constructor(public databaseId: string, cause?: unknown) {
+	constructor(
+		public databaseId: string,
+		cause?: unknown,
+	) {
 		super(`Failed to fetch topology for database '${databaseId}'`);
-		this.name = 'TopologyFetchError';
+		this.name = "TopologyFetchError";
 		this.cause = cause;
 	}
 }
 
 export class TopologyUpdateError extends Error {
-	public cause?: unknown;
+	public override cause?: unknown;
 
-	constructor(public tableName: string, cause?: unknown) {
+	constructor(
+		public tableName: string,
+		cause?: unknown,
+	) {
 		super(`Failed to update topology for table '${tableName}'`);
-		this.name = 'TopologyUpdateError';
+		this.name = "TopologyUpdateError";
 		this.cause = cause;
 	}
 }
 
 export class StorageExecutionError extends Error {
-	public cause?: unknown;
+	public override cause?: unknown;
 
-	constructor(public nodeId: string, public query: string, cause?: unknown) {
+	constructor(
+		public nodeId: string,
+		public query: string,
+		cause?: unknown,
+	) {
 		super(`Failed to execute query on node '${nodeId}'`);
-		this.name = 'StorageExecutionError';
+		this.name = "StorageExecutionError";
 		this.cause = cause;
 	}
 }
@@ -71,7 +81,7 @@ export interface ShardStats {
 /**
  * Result from a SQL query execution
  */
-export interface QueryResult<T = Record<string, any>> {
+export interface QueryResult<T = Record<string, unknown>> {
 	rows: T[];
 	rowsAffected?: number;
 	cacheStats?: QueryCacheStats; // Cache statistics (only for SELECT queries)
@@ -82,8 +92,11 @@ export interface QueryResult<T = Record<string, any>> {
  * Conductor API interface with sql execution and cache management
  */
 export interface ConductorAPI {
-	sql: <T = Record<string, any>>(strings: TemplateStringsArray, ...values: any[]) => Promise<QueryResult<T>>;
-	getCacheStats: () => any; // CacheStats from topology-cache
+	sql: <T = Record<string, unknown>>(
+		strings: TemplateStringsArray,
+		...values: SqlParam[]
+	) => Promise<QueryResult<T>>;
+	getCacheStats: () => CacheStats;
 	clearCache: () => void;
 }
 
@@ -97,7 +110,7 @@ export interface QueryHandlerContext {
 	topology: DurableObjectNamespace<Topology>;
 	indexQueue?: Queue;
 	env?: Env;
-	cache: any; // TopologyCache instance
+	cache: TopologyCache;
 }
 
 /**

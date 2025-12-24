@@ -8,15 +8,13 @@
 export {
 	ConductorClient,
 	createConductor,
-} from './conductor/index';
-
-export type {
-	QueryResult,
-	ConductorAPI,
-} from './conductor/types';
-
+} from "./conductor/index";
 // Export table operations API
 export {
 	createTableOperationsAPI,
 	TableOperationsAPI,
-} from './conductor/tables';
+} from "./conductor/tables";
+export type {
+	ConductorAPI,
+	QueryResult,
+} from "./conductor/types";

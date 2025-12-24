@@ -10,15 +10,21 @@
  * This benchmark uses Cloudflare Workflows to seed the database with realistic data.
  */
 
-import { WorkerEntrypoint, WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
-import { createConnection } from 'big-daddy';
-import type { ConnectionConfig, SqlFunction } from 'big-daddy';
+import {
+	WorkerEntrypoint,
+	WorkflowEntrypoint,
+	type WorkflowEvent,
+	type WorkflowStep,
+} from "cloudflare:workers";
+import type { BigDaddyEnv, ConnectionConfig, SqlFunction } from "big-daddy";
+import { createConnection } from "big-daddy";
 
 interface BenchmarkEnv {
 	STORAGE: DurableObjectNamespace;
 	TOPOLOGY: DurableObjectNamespace;
 	INDEX_QUEUE: Queue;
 	SEED_WORKFLOW: Workflow;
+	AI: Ai;
 }
 
 /**
@@ -40,8 +46,26 @@ interface SeedParams {
  * Generate a random username
  */
 function randomUsername(): string {
-	const adjectives = ['Happy', 'Clever', 'Brave', 'Swift', 'Wise', 'Bold', 'Kind', 'Cool'];
-	const nouns = ['Panda', 'Eagle', 'Tiger', 'Dolphin', 'Wolf', 'Fox', 'Bear', 'Hawk'];
+	const adjectives = [
+		"Happy",
+		"Clever",
+		"Brave",
+		"Swift",
+		"Wise",
+		"Bold",
+		"Kind",
+		"Cool",
+	];
+	const nouns = [
+		"Panda",
+		"Eagle",
+		"Tiger",
+		"Dolphin",
+		"Wolf",
+		"Fox",
+		"Bear",
+		"Hawk",
+	];
 	const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
 	const noun = nouns[Math.floor(Math.random() * nouns.length)];
 	const num = Math.floor(Math.random() * 1000);
@@ -53,18 +77,18 @@ function randomUsername(): string {
  */
 function randomPostTitle(): string {
 	const titles = [
-		'Getting Started with Distributed Databases',
-		'Understanding Cloudflare Workers',
-		'Building Scalable Applications',
-		'The Future of Edge Computing',
-		'Optimizing Database Performance',
-		'Best Practices for Sharding',
-		'Introduction to Durable Objects',
-		'Mastering SQL at the Edge',
-		'Performance Tuning Tips',
-		'Building Real-time Applications',
+		"Getting Started with Distributed Databases",
+		"Understanding Cloudflare Workers",
+		"Building Scalable Applications",
+		"The Future of Edge Computing",
+		"Optimizing Database Performance",
+		"Best Practices for Sharding",
+		"Introduction to Durable Objects",
+		"Mastering SQL at the Edge",
+		"Performance Tuning Tips",
+		"Building Real-time Applications",
 	];
-	return titles[Math.floor(Math.random() * titles.length)];
+	return titles[Math.floor(Math.random() * titles.length)]!;
 }
 
 /**
@@ -72,13 +96,13 @@ function randomPostTitle(): string {
  */
 function randomPostContent(): string {
 	const paragraphs = [
-		'This is an interesting post about distributed systems and how they scale.',
-		'In this article, we explore the fundamentals of edge computing.',
-		'Performance optimization is crucial for modern web applications.',
-		'Let me share some insights from my recent project experience.',
-		'Here are some best practices I\'ve learned over the years.',
+		"This is an interesting post about distributed systems and how they scale.",
+		"In this article, we explore the fundamentals of edge computing.",
+		"Performance optimization is crucial for modern web applications.",
+		"Let me share some insights from my recent project experience.",
+		"Here are some best practices I've learned over the years.",
 	];
-	return paragraphs[Math.floor(Math.random() * paragraphs.length)];
+	return paragraphs[Math.floor(Math.random() * paragraphs.length)]!;
 }
 
 /**
@@ -86,35 +110,39 @@ function randomPostContent(): string {
  */
 function randomComment(): string {
 	const comments = [
-		'Great article! Very informative.',
-		'Thanks for sharing this.',
-		'I learned a lot from this post.',
-		'Interesting perspective!',
-		'This is exactly what I needed to know.',
-		'Well written and easy to follow.',
-		'Could you elaborate more on this topic?',
-		'I have a question about the implementation.',
+		"Great article! Very informative.",
+		"Thanks for sharing this.",
+		"I learned a lot from this post.",
+		"Interesting perspective!",
+		"This is exactly what I needed to know.",
+		"Well written and easy to follow.",
+		"Could you elaborate more on this topic?",
+		"I have a question about the implementation.",
 	];
-	return comments[Math.floor(Math.random() * comments.length)];
+	return comments[Math.floor(Math.random() * comments.length)]!;
 }
 
 /**
  * Seed Workflow - Populates the database with test data
  */
 export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
-	async run(event: WorkflowEvent<SeedParams>, step: WorkflowStep) {
+	override async run(event: WorkflowEvent<SeedParams>, step: WorkflowStep) {
 		const { databaseId, config } = event.payload;
 
 		// Step 1: Create SQL connection
-		const sql = await step.do('create-connection', async () => {
+		const sql = await step.do("create-connection", async () => {
 			const connectionConfig: ConnectionConfig = {
 				nodes: 8, // 8 storage nodes for sharding
 			};
-			return await createConnection(databaseId, connectionConfig, this.env);
+			return await createConnection(
+				databaseId,
+				connectionConfig,
+				this.env as unknown as BigDaddyEnv,
+			);
 		});
 
 		// Step 2: Create schema
-		await step.do('create-schema', async () => {
+		await step.do("create-schema", async () => {
 			// Users table
 			await (sql as SqlFunction)`
 				CREATE TABLE IF NOT EXISTS users (
@@ -175,7 +203,7 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 		});
 
 		// Step 3: Seed users
-		const userIds = await step.do('seed-users', async () => {
+		const userIds = await step.do("seed-users", async () => {
 			const ids: number[] = [];
 			const now = Date.now();
 
@@ -197,13 +225,13 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 		});
 
 		// Step 4: Seed posts
-		const postIds = await step.do('seed-posts', async () => {
+		const postIds = await step.do("seed-posts", async () => {
 			const ids: number[] = [];
 			const now = Date.now();
 
 			for (let i = 0; i < config.numPosts; i++) {
 				const postId = 2000 + i;
-				const userId = userIds[Math.floor(Math.random() * userIds.length)];
+				const userId = userIds[Math.floor(Math.random() * userIds.length)]!;
 				const title = randomPostTitle();
 				const content = randomPostContent();
 
@@ -219,13 +247,13 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 		});
 
 		// Step 5: Seed comments
-		await step.do('seed-comments', async () => {
+		await step.do("seed-comments", async () => {
 			const now = Date.now();
 
 			for (let i = 0; i < config.numComments; i++) {
 				const commentId = 3000 + i;
-				const postId = postIds[Math.floor(Math.random() * postIds.length)];
-				const userId = userIds[Math.floor(Math.random() * userIds.length)];
+				const postId = postIds[Math.floor(Math.random() * postIds.length)]!;
+				const userId = userIds[Math.floor(Math.random() * userIds.length)]!;
 				const content = randomComment();
 
 				await (sql as SqlFunction)`
@@ -238,7 +266,7 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 		});
 
 		// Step 6: Seed likes
-		await step.do('seed-likes', async () => {
+		await step.do("seed-likes", async () => {
 			const now = Date.now();
 			const existingLikes = new Set<string>();
 
@@ -250,8 +278,8 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 
 				// Ensure unique post_id/user_id combinations
 				do {
-					postId = postIds[Math.floor(Math.random() * postIds.length)];
-					userId = userIds[Math.floor(Math.random() * userIds.length)];
+					postId = postIds[Math.floor(Math.random() * postIds.length)]!;
+					userId = userIds[Math.floor(Math.random() * userIds.length)]!;
 					key = `${postId}-${userId}`;
 				} while (existingLikes.has(key));
 
@@ -268,7 +296,7 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 
 		return {
 			success: true,
-			message: 'Database seeded successfully',
+			message: "Database seeded successfully",
 			stats: {
 				users: config.numUsers,
 				posts: config.numPosts,
@@ -285,42 +313,43 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> {
 	override async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
-		const correlationId = request.headers.get('x-correlation-id') || crypto.randomUUID();
+		const correlationId =
+			request.headers.get("x-correlation-id") || crypto.randomUUID();
 
 		try {
 			// Route handlers
 			switch (url.pathname) {
-				case '/':
+				case "/":
 					return this.handleRoot();
 
-				case '/setup':
+				case "/setup":
 					return await this.handleSetup(correlationId);
 
-				case '/seed':
+				case "/seed":
 					return await this.handleSeed(request, correlationId);
 
-				case '/reset':
+				case "/reset":
 					return await this.handleReset(correlationId);
 
-				case '/stats':
+				case "/stats":
 					return await this.handleStats(correlationId);
 
-				case '/query/users':
+				case "/query/users":
 					return await this.handleQueryUsers(url, correlationId);
 
-				case '/query/posts':
+				case "/query/posts":
 					return await this.handleQueryPosts(url, correlationId);
 
-				case '/query/post-with-comments':
+				case "/query/post-with-comments":
 					return await this.handleQueryPostWithComments(url, correlationId);
 
-				case '/query/user-feed':
+				case "/query/user-feed":
 					return await this.handleQueryUserFeed(url, correlationId);
 
 				default:
-					return new Response(JSON.stringify({ error: 'Not found' }), {
+					return new Response(JSON.stringify({ error: "Not found" }), {
 						status: 404,
-						headers: { 'Content-Type': 'application/json' },
+						headers: { "Content-Type": "application/json" },
 					});
 			}
 		} catch (error) {
@@ -331,8 +360,8 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 				}),
 				{
 					status: 500,
-					headers: { 'Content-Type': 'application/json' },
-				}
+					headers: { "Content-Type": "application/json" },
+				},
 			);
 		}
 	}
@@ -343,22 +372,23 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 	private handleRoot(): Response {
 		return new Response(
 			JSON.stringify({
-				name: 'Blog Benchmark API',
-				version: '1.0.0',
+				name: "Blog Benchmark API",
+				version: "1.0.0",
 				endpoints: {
-					'/setup': 'POST - Initialize database schema',
-					'/seed': 'POST - Seed database with test data (triggers workflow). Body: { users, posts, comments, likes }',
-					'/reset': 'POST - Drop all tables',
-					'/stats': 'GET - Get database statistics',
-					'/query/users': 'GET - Query users by username',
-					'/query/posts': 'GET - Query posts by user_id',
-					'/query/post-with-comments': 'GET - Get post with all comments',
-					'/query/user-feed': 'GET - Get user feed with posts and likes',
+					"/setup": "POST - Initialize database schema",
+					"/seed":
+						"POST - Seed database with test data (triggers workflow). Body: { users, posts, comments, likes }",
+					"/reset": "POST - Drop all tables",
+					"/stats": "GET - Get database statistics",
+					"/query/users": "GET - Query users by username",
+					"/query/posts": "GET - Query posts by user_id",
+					"/query/post-with-comments": "GET - Get post with all comments",
+					"/query/user-feed": "GET - Get user feed with posts and likes",
 				},
 			}),
 			{
-				headers: { 'Content-Type': 'application/json' },
-			}
+				headers: { "Content-Type": "application/json" },
+			},
 		);
 	}
 
@@ -367,12 +397,12 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 	 */
 	private async handleSetup(correlationId: string): Promise<Response> {
 		const startTime = Date.now();
-		const databaseId = 'blog-benchmark';
+		const databaseId = "blog-benchmark";
 
 		const sql = await createConnection(
 			databaseId,
 			{ nodes: 8, correlationId },
-			this.env
+			this.env as unknown as BigDaddyEnv,
 		);
 
 		// Users table
@@ -428,22 +458,25 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 		return new Response(
 			JSON.stringify({
 				success: true,
-				message: 'Blog schema created',
+				message: "Blog schema created",
 				duration,
 				correlationId,
 			}),
 			{
-				headers: { 'Content-Type': 'application/json' },
-			}
+				headers: { "Content-Type": "application/json" },
+			},
 		);
 	}
 
 	/**
 	 * Seed: Trigger workflow to populate database
 	 */
-	private async handleSeed(request: Request, correlationId: string): Promise<Response> {
+	private async handleSeed(
+		request: Request,
+		correlationId: string,
+	): Promise<Response> {
 		const startTime = Date.now();
-		const databaseId = 'blog-benchmark';
+		const databaseId = "blog-benchmark";
 
 		// Parse seed configuration from request body
 		let config: SeedConfig;
@@ -477,15 +510,15 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 		return new Response(
 			JSON.stringify({
 				success: true,
-				message: 'Seeding workflow started',
+				message: "Seeding workflow started",
 				workflowId: instance.id,
 				config,
 				duration,
 				correlationId,
 			}),
 			{
-				headers: { 'Content-Type': 'application/json' },
-			}
+				headers: { "Content-Type": "application/json" },
+			},
 		);
 	}
 
@@ -494,12 +527,12 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 	 */
 	private async handleReset(correlationId: string): Promise<Response> {
 		const startTime = Date.now();
-		const databaseId = 'blog-benchmark';
+		const databaseId = "blog-benchmark";
 
 		const sql = await createConnection(
 			databaseId,
 			{ nodes: 8, correlationId },
-			this.env
+			this.env as unknown as BigDaddyEnv,
 		);
 
 		await sql`DROP TABLE IF EXISTS likes`;
@@ -512,13 +545,13 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 		return new Response(
 			JSON.stringify({
 				success: true,
-				message: 'All tables dropped',
+				message: "All tables dropped",
 				duration,
 				correlationId,
 			}),
 			{
-				headers: { 'Content-Type': 'application/json' },
-			}
+				headers: { "Content-Type": "application/json" },
+			},
 		);
 	}
 
@@ -527,12 +560,12 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 	 */
 	private async handleStats(correlationId: string): Promise<Response> {
 		const startTime = Date.now();
-		const databaseId = 'blog-benchmark';
+		const databaseId = "blog-benchmark";
 
 		const sql = await createConnection(
 			databaseId,
 			{ nodes: 8, correlationId },
-			this.env
+			this.env as unknown as BigDaddyEnv,
 		);
 
 		const usersResult = await sql`SELECT COUNT(*) as count FROM users`;
@@ -555,26 +588,30 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 				correlationId,
 			}),
 			{
-				headers: { 'Content-Type': 'application/json' },
-			}
+				headers: { "Content-Type": "application/json" },
+			},
 		);
 	}
 
 	/**
 	 * Query users by username (index scan)
 	 */
-	private async handleQueryUsers(url: URL, correlationId: string): Promise<Response> {
+	private async handleQueryUsers(
+		url: URL,
+		correlationId: string,
+	): Promise<Response> {
 		const startTime = Date.now();
-		const databaseId = 'blog-benchmark';
-		const username = url.searchParams.get('username') || 'HappyPanda%';
+		const databaseId = "blog-benchmark";
+		const username = url.searchParams.get("username") || "HappyPanda%";
 
 		const sql = await createConnection(
 			databaseId,
 			{ nodes: 8, correlationId },
-			this.env
+			this.env as unknown as BigDaddyEnv,
 		);
 
-		const result = await sql`SELECT * FROM users WHERE username LIKE ${username} LIMIT 10`;
+		const result =
+			await sql`SELECT * FROM users WHERE username LIKE ${username} LIMIT 10`;
 
 		const duration = Date.now() - startTime;
 
@@ -588,26 +625,30 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 				correlationId,
 			}),
 			{
-				headers: { 'Content-Type': 'application/json' },
-			}
+				headers: { "Content-Type": "application/json" },
+			},
 		);
 	}
 
 	/**
 	 * Query posts by user_id (index scan)
 	 */
-	private async handleQueryPosts(url: URL, correlationId: string): Promise<Response> {
+	private async handleQueryPosts(
+		url: URL,
+		correlationId: string,
+	): Promise<Response> {
 		const startTime = Date.now();
-		const databaseId = 'blog-benchmark';
-		const userId = parseInt(url.searchParams.get('user_id') || '1000');
+		const databaseId = "blog-benchmark";
+		const userId = parseInt(url.searchParams.get("user_id") || "1000", 10);
 
 		const sql = await createConnection(
 			databaseId,
 			{ nodes: 8, correlationId },
-			this.env
+			this.env as unknown as BigDaddyEnv,
 		);
 
-		const result = await sql`SELECT * FROM posts WHERE user_id = ${userId} LIMIT 10`;
+		const result =
+			await sql`SELECT * FROM posts WHERE user_id = ${userId} LIMIT 10`;
 
 		const duration = Date.now() - startTime;
 
@@ -622,27 +663,31 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 				correlationId,
 			}),
 			{
-				headers: { 'Content-Type': 'application/json' },
-			}
+				headers: { "Content-Type": "application/json" },
+			},
 		);
 	}
 
 	/**
 	 * Query post with all comments (join-like query)
 	 */
-	private async handleQueryPostWithComments(url: URL, correlationId: string): Promise<Response> {
+	private async handleQueryPostWithComments(
+		url: URL,
+		correlationId: string,
+	): Promise<Response> {
 		const startTime = Date.now();
-		const databaseId = 'blog-benchmark';
-		const postId = parseInt(url.searchParams.get('post_id') || '2000');
+		const databaseId = "blog-benchmark";
+		const postId = parseInt(url.searchParams.get("post_id") || "2000", 10);
 
 		const sql = await createConnection(
 			databaseId,
 			{ nodes: 8, correlationId },
-			this.env
+			this.env as unknown as BigDaddyEnv,
 		);
 
 		const postResult = await sql`SELECT * FROM posts WHERE id = ${postId}`;
-		const commentsResult = await sql`SELECT * FROM comments WHERE post_id = ${postId}`;
+		const commentsResult =
+			await sql`SELECT * FROM comments WHERE post_id = ${postId}`;
 
 		const duration = Date.now() - startTime;
 
@@ -656,37 +701,42 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 				correlationId,
 			}),
 			{
-				headers: { 'Content-Type': 'application/json' },
-			}
+				headers: { "Content-Type": "application/json" },
+			},
 		);
 	}
 
 	/**
 	 * Query user feed (posts with like counts)
 	 */
-	private async handleQueryUserFeed(url: URL, correlationId: string): Promise<Response> {
+	private async handleQueryUserFeed(
+		url: URL,
+		correlationId: string,
+	): Promise<Response> {
 		const startTime = Date.now();
-		const databaseId = 'blog-benchmark';
-		const userId = parseInt(url.searchParams.get('user_id') || '1000');
+		const databaseId = "blog-benchmark";
+		const userId = parseInt(url.searchParams.get("user_id") || "1000", 10);
 
 		const sql = await createConnection(
 			databaseId,
 			{ nodes: 8, correlationId },
-			this.env
+			this.env as unknown as BigDaddyEnv,
 		);
 
 		// Get user's posts
-		const postsResult = await sql`SELECT * FROM posts WHERE user_id = ${userId} LIMIT 10`;
+		const postsResult =
+			await sql`SELECT * FROM posts WHERE user_id = ${userId} LIMIT 10`;
 
 		// For each post, get like count (in production, this would be a single JOIN query)
 		const postsWithLikes = await Promise.all(
-			postsResult.rows.map(async (post: any) => {
-				const likesResult = await sql`SELECT COUNT(*) as count FROM likes WHERE post_id = ${post.id}`;
+			(postsResult.rows as { id: number }[]).map(async (post) => {
+				const likesResult =
+					await sql`SELECT COUNT(*) as count FROM likes WHERE post_id = ${post.id}`;
 				return {
 					...post,
 					likeCount: likesResult.rows[0]?.count || 0,
 				};
-			})
+			}),
 		);
 
 		const duration = Date.now() - startTime;
@@ -700,8 +750,8 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 				correlationId,
 			}),
 			{
-				headers: { 'Content-Type': 'application/json' },
-			}
+				headers: { "Content-Type": "application/json" },
+			},
 		);
 	}
 }

@@ -5,7 +5,10 @@ interface Env {
 	STORAGE: DurableObjectNamespace /* Storage from big-daddy */;
 	TOPOLOGY: DurableObjectNamespace /* Topology from big-daddy */;
 	BIG_DADDY: {
-		createConnection(databaseId: string, config: import('big-daddy').ConnectionConfig): Promise<import('big-daddy').SqlFunction>;
+		createConnection(
+			databaseId: string,
+			config: import("big-daddy").ConnectionConfig,
+		): Promise<import("big-daddy").SqlFunction>;
 	};
 	INDEX_QUEUE: Queue;
 	SEED_WORKFLOW: Workflow;

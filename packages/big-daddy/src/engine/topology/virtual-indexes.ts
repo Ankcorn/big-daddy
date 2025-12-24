@@ -15,12 +15,16 @@
  * - maintainIndexesForInsert: Maintain indexes for INSERT operations (helper)
  */
 
-import type { Expression, BinaryExpression, Literal, Placeholder, InsertStatement } from '@databases/sqlite-ast';
-import type { Topology } from './index';
-import type { IndexStatus, SqlParam } from './types';
+import type {
+	Expression,
+	InsertStatement,
+	Literal,
+	Placeholder,
+} from "@databases/sqlite-ast";
+import type { IndexStatus, SqlParam } from "./types";
 
 export class VirtualIndexOperations {
-	constructor(private storage: any) {}
+	constructor(private storage: DurableObjectStorage) {}
 
 	/**
 	 * Create a virtual index
@@ -35,11 +39,14 @@ export class VirtualIndexOperations {
 		indexName: string,
 		tableName: string,
 		columns: string[],
-		indexType: 'hash' | 'unique',
+		indexType: "hash" | "unique",
 	): Promise<{ success: boolean; error?: string }> {
 		// Check if index already exists
 		const existing = this.storage.sql
-			.exec(`SELECT index_name FROM virtual_indexes WHERE index_name = ?`, indexName)
+			.exec(
+				`SELECT index_name FROM virtual_indexes WHERE index_name = ?`,
+				indexName,
+			)
 			.toArray() as unknown as { index_name: string }[];
 
 		if (existing.length > 0) {
@@ -80,7 +87,11 @@ export class VirtualIndexOperations {
 	 * @param status - New status
 	 * @param errorMessage - Optional error message for failed status
 	 */
-	async updateIndexStatus(indexName: string, status: IndexStatus, errorMessage?: string): Promise<void> {
+	async updateIndexStatus(
+		indexName: string,
+		status: IndexStatus,
+		errorMessage?: string,
+	): Promise<void> {
 		const now = Date.now();
 
 		this.storage.sql.exec(
@@ -134,9 +145,16 @@ export class VirtualIndexOperations {
 	 * @param keyValue - The indexed value
 	 * @returns Array of shard IDs, or null if not found
 	 */
-	async getIndexedShards(indexName: string, keyValue: string): Promise<number[] | null> {
+	async getIndexedShards(
+		indexName: string,
+		keyValue: string,
+	): Promise<number[] | null> {
 		const result = this.storage.sql
-			.exec(`SELECT shard_ids FROM virtual_index_entries WHERE index_name = ? AND key_value = ?`, indexName, keyValue)
+			.exec(
+				`SELECT shard_ids FROM virtual_index_entries WHERE index_name = ? AND key_value = ?`,
+				indexName,
+				keyValue,
+			)
 			.toArray() as unknown as { shard_ids: string }[];
 
 		if (result.length === 0) {
@@ -154,7 +172,11 @@ export class VirtualIndexOperations {
 	 * @param keyValue - The indexed value
 	 * @param shardId - Shard ID to add
 	 */
-	async addShardToIndexEntry(indexName: string, keyValue: string, shardId: number): Promise<void> {
+	async addShardToIndexEntry(
+		indexName: string,
+		keyValue: string,
+		shardId: number,
+	): Promise<void> {
 		const now = Date.now();
 
 		// Get existing entry
@@ -195,7 +217,11 @@ export class VirtualIndexOperations {
 	 * @param keyValue - The indexed value
 	 * @param shardId - Shard ID to remove
 	 */
-	async removeShardFromIndexEntry(indexName: string, keyValue: string, shardId: number): Promise<void> {
+	async removeShardFromIndexEntry(
+		indexName: string,
+		keyValue: string,
+		shardId: number,
+	): Promise<void> {
 		const now = Date.now();
 
 		// Get existing entry
@@ -236,7 +262,10 @@ export class VirtualIndexOperations {
 	 */
 	async dropVirtualIndex(indexName: string): Promise<{ success: boolean }> {
 		// CASCADE will automatically delete index entries
-		this.storage.sql.exec(`DELETE FROM virtual_indexes WHERE index_name = ?`, indexName);
+		this.storage.sql.exec(
+			`DELETE FROM virtual_indexes WHERE index_name = ?`,
+			indexName,
+		);
 
 		return { success: true };
 	}
@@ -245,12 +274,15 @@ export class VirtualIndexOperations {
 	 * Get all index entries that include a specific shard
 	 * Used by async index maintenance to rebuild index state
 	 */
-	async getIndexEntriesForShard(indexName: string, shardId: number): Promise<Array<{ key_value: string }>> {
+	async getIndexEntriesForShard(
+		indexName: string,
+		shardId: number,
+	): Promise<Array<{ key_value: string }>> {
 		const entries = this.storage.sql
 			.exec(
 				`SELECT key_value, shard_ids FROM virtual_index_entries
 		     WHERE index_name = ?`,
-				indexName
+				indexName,
 			)
 			.toArray() as Array<{ key_value: string; shard_ids: string }>;
 
@@ -268,17 +300,25 @@ export class VirtualIndexOperations {
 	 */
 	async batchMaintainIndexes(
 		changes: Array<{
-			operation: 'add' | 'remove';
+			operation: "add" | "remove";
 			index_name: string;
 			key_value: string;
 			shard_id: number;
 		}>,
 	): Promise<void> {
 		for (const change of changes) {
-			if (change.operation === 'add') {
-				await this.addShardToIndexEntry(change.index_name, change.key_value, change.shard_id);
+			if (change.operation === "add") {
+				await this.addShardToIndexEntry(
+					change.index_name,
+					change.key_value,
+					change.shard_id,
+				);
 			} else {
-				await this.removeShardFromIndexEntry(change.index_name, change.key_value, change.shard_id);
+				await this.removeShardFromIndexEntry(
+					change.index_name,
+					change.key_value,
+					change.shard_id,
+				);
 			}
 		}
 	}
@@ -289,13 +329,25 @@ export class VirtualIndexOperations {
 	 */
 	async getShardsFromIndexedWhere(
 		where: Expression,
-		tableName: string,
-		tableShards: Array<{ table_name: string; shard_id: number; node_id: string }>,
-		virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
-		params: SqlParam[]
-	): Promise<Array<{ table_name: string; shard_id: number; node_id: string }> | null> {
+		_tableName: string,
+		tableShards: Array<{
+			table_name: string;
+			shard_id: number;
+			node_id: string;
+		}>,
+		virtualIndexes: Array<{
+			index_name: string;
+			columns: string;
+			index_type: "hash" | "unique";
+		}>,
+		params: SqlParam[],
+	): Promise<Array<{
+		table_name: string;
+		shard_id: number;
+		node_id: string;
+	}> | null> {
 		// Try to match composite index from AND conditions
-		if (where.type === 'BinaryExpression' && where.operator === 'AND') {
+		if (where.type === "BinaryExpression" && where.operator === "AND") {
 			const columnValues = this.extractColumnValuesFromAnd(where, params);
 
 			if (columnValues.size > 0) {
@@ -316,7 +368,10 @@ export class VirtualIndexOperations {
 						}
 					}
 
-					return matchCount > 0 && matchCount === Math.min(columnValues.size, indexColumns.length);
+					return (
+						matchCount > 0 &&
+						matchCount === Math.min(columnValues.size, indexColumns.length)
+					);
 				});
 
 				if (index) {
@@ -330,7 +385,7 @@ export class VirtualIndexOperations {
 						}
 						keyValue = String(value);
 					} else {
-						const values: any[] = [];
+						const values: SqlParam[] = [];
 						for (const col of indexColumns) {
 							const value = columnValues.get(col);
 							if (value === undefined) break;
@@ -338,10 +393,14 @@ export class VirtualIndexOperations {
 							values.push(value);
 						}
 						if (values.length === 0) return null;
-						keyValue = values.length === 1 ? String(values[0]) : JSON.stringify(values);
+						keyValue =
+							values.length === 1 ? String(values[0]) : JSON.stringify(values);
 					}
 
-					const shardIds = await this.getIndexedShards(index.index_name, keyValue);
+					const shardIds = await this.getIndexedShards(
+						index.index_name,
+						keyValue,
+					);
 					if (shardIds === null || shardIds.length === 0) {
 						return [];
 					}
@@ -352,14 +411,14 @@ export class VirtualIndexOperations {
 		}
 
 		// Try to match single equality condition
-		if (where.type === 'BinaryExpression' && where.operator === '=') {
+		if (where.type === "BinaryExpression" && where.operator === "=") {
 			let columnName: string | null = null;
-			let valueExpression: any | null = null;
+			let valueExpression: Expression | null = null;
 
-			if (where.left.type === 'Identifier') {
+			if (where.left.type === "Identifier") {
 				columnName = where.left.name;
 				valueExpression = where.right;
-			} else if (where.right.type === 'Identifier') {
+			} else if (where.right.type === "Identifier") {
 				columnName = where.right.name;
 				valueExpression = where.left;
 			}
@@ -393,8 +452,9 @@ export class VirtualIndexOperations {
 		}
 
 		// Try to match IN query
-		if (where.type === 'InExpression') {
-			const columnName = where.expression.type === 'Identifier' ? where.expression.name : null;
+		if (where.type === "InExpression") {
+			const columnName =
+				where.expression.type === "Identifier" ? where.expression.name : null;
 
 			if (!columnName) {
 				return null;
@@ -409,7 +469,7 @@ export class VirtualIndexOperations {
 				return null;
 			}
 
-			const values: any[] = [];
+			const values: SqlParam[] = [];
 			for (const item of where.values) {
 				const value = this.extractValueFromExpression(item, params);
 				if (value !== null && value !== undefined) {
@@ -424,10 +484,15 @@ export class VirtualIndexOperations {
 			const allShardIds = new Set<number>();
 			for (const value of values) {
 				const keyValue = String(value);
-				const shardIds = await this.getIndexedShards(index.index_name, keyValue);
+				const shardIds = await this.getIndexedShards(
+					index.index_name,
+					keyValue,
+				);
 
 				if (shardIds && shardIds.length > 0) {
-					shardIds.forEach(id => allShardIds.add(id));
+					for (const id of shardIds) {
+						allShardIds.add(id);
+					}
 				}
 			}
 
@@ -449,7 +514,7 @@ export class VirtualIndexOperations {
 		statement: InsertStatement,
 		indexes: Array<{ index_name: string; columns: string }>,
 		shard: { table_name: string; shard_id: number; node_id: string },
-		params: SqlParam[]
+		params: SqlParam[],
 	): Promise<void> {
 		// Extract values from the INSERT statement
 		if (!statement.columns || statement.values.length === 0) {
@@ -463,19 +528,20 @@ export class VirtualIndexOperations {
 			const indexColumns = JSON.parse(index.columns);
 
 			// Build composite key from all indexed columns
-			const values: any[] = [];
+			const values: SqlParam[] = [];
 			let hasNull = false;
 
 			for (const colName of indexColumns) {
-				const columnIndex = statement.columns.findIndex((col: any) => col.name === colName);
+				const columnIndex =
+					statement.columns?.findIndex((col) => col.name === colName) ?? -1;
 				if (columnIndex === -1) {
 					// This column is not in the INSERT - skip this index
 					hasNull = true;
 					break;
 				}
 
-				const valueExpression = row[columnIndex];
-				const value = this.extractValueFromExpression(valueExpression, params);
+				const valueExpression = row?.[columnIndex];
+				const value = this.extractValueFromExpression(valueExpression!, params);
 
 				if (value === null || value === undefined) {
 					// NULL values are not indexed
@@ -491,10 +557,15 @@ export class VirtualIndexOperations {
 			}
 
 			// Build the key value
-			const keyValue = indexColumns.length === 1 ? String(values[0]) : JSON.stringify(values);
+			const keyValue =
+				indexColumns.length === 1 ? String(values[0]) : JSON.stringify(values);
 
 			// Add this shard to the index entry for this value
-			await this.addShardToIndexEntry(index.index_name, keyValue, shard.shard_id);
+			await this.addShardToIndexEntry(
+				index.index_name,
+				keyValue,
+				shard.shard_id,
+			);
 		}
 	}
 
@@ -507,9 +578,9 @@ export class VirtualIndexOperations {
 	 * @param shardId - The shard where rows were deleted
 	 */
 	async maintainIndexesForDelete(
-		rows: Record<string, any>[],
+		rows: Record<string, SqlParam>[],
 		indexes: Array<{ index_name: string; columns: string }>,
-		shardId: number
+		shardId: number,
 	): Promise<void> {
 		for (const index of indexes) {
 			const indexColumns = JSON.parse(index.columns) as string[];
@@ -518,7 +589,11 @@ export class VirtualIndexOperations {
 				const keyValue = this.buildKeyValueFromRow(row, indexColumns);
 				if (keyValue === null) continue;
 
-				await this.removeShardFromIndexEntry(index.index_name, keyValue, shardId);
+				await this.removeShardFromIndexEntry(
+					index.index_name,
+					keyValue,
+					shardId,
+				);
 			}
 		}
 	}
@@ -537,10 +612,10 @@ export class VirtualIndexOperations {
 	 * @param shardId - The shard where rows were updated
 	 */
 	async maintainIndexesForUpdate(
-		oldRows: Record<string, any>[],
-		newRows: Record<string, any>[],
+		oldRows: Record<string, SqlParam>[],
+		newRows: Record<string, SqlParam>[],
 		indexes: Array<{ index_name: string; columns: string }>,
-		shardId: number
+		shardId: number,
 	): Promise<void> {
 		for (const index of indexes) {
 			const indexColumns = JSON.parse(index.columns) as string[];
@@ -566,7 +641,11 @@ export class VirtualIndexOperations {
 			// Remove entries for values that are no longer present
 			for (const keyValue of oldKeyValues) {
 				if (!newKeyValues.has(keyValue)) {
-					await this.removeShardFromIndexEntry(index.index_name, keyValue, shardId);
+					await this.removeShardFromIndexEntry(
+						index.index_name,
+						keyValue,
+						shardId,
+					);
 				}
 			}
 
@@ -584,7 +663,10 @@ export class VirtualIndexOperations {
 	 * Returns null if any indexed column is NULL (NULL values are not indexed)
 	 * Private helper shared by maintainIndexesForDelete/Update
 	 */
-	private buildKeyValueFromRow(row: Record<string, any>, columns: string[]): string | null {
+	private buildKeyValueFromRow(
+		row: Record<string, SqlParam>,
+		columns: string[],
+	): string | null {
 		if (columns.length === 1) {
 			const value = row[columns[0]!];
 			if (value === null || value === undefined) {
@@ -605,28 +687,34 @@ export class VirtualIndexOperations {
 	 * Extract column-value pairs from AND conditions
 	 * Private helper
 	 */
-	private extractColumnValuesFromAnd(where: Expression, params: SqlParam[]): Map<string, any> {
-		const columnValues = new Map<string, any>();
+	private extractColumnValuesFromAnd(
+		where: Expression,
+		params: SqlParam[],
+	): Map<string, SqlParam> {
+		const columnValues = new Map<string, SqlParam>();
 
 		const extract = (node: Expression) => {
-			if (node.type === 'BinaryExpression') {
-				if (node.operator === 'AND') {
+			if (node.type === "BinaryExpression") {
+				if (node.operator === "AND") {
 					extract(node.left);
 					extract(node.right);
-				} else if (node.operator === '=') {
+				} else if (node.operator === "=") {
 					let columnName: string | null = null;
-					let valueExpression: any | null = null;
+					let valueExpression: Expression | null = null;
 
-					if (node.left.type === 'Identifier') {
+					if (node.left.type === "Identifier") {
 						columnName = node.left.name;
 						valueExpression = node.right;
-					} else if (node.right.type === 'Identifier') {
+					} else if (node.right.type === "Identifier") {
 						columnName = node.right.name;
 						valueExpression = node.left;
 					}
 
 					if (columnName && valueExpression) {
-						const value = this.extractValueFromExpression(valueExpression, params);
+						const value = this.extractValueFromExpression(
+							valueExpression,
+							params,
+						);
 						columnValues.set(columnName, value);
 					}
 				}
@@ -641,14 +729,17 @@ export class VirtualIndexOperations {
 	 * Extract value from an expression node
 	 * Private helper
 	 */
-	private extractValueFromExpression(expression: Expression, params: SqlParam[]): any {
+	private extractValueFromExpression(
+		expression: Expression,
+		params: SqlParam[],
+	): SqlParam {
 		if (!expression) {
 			return null;
 		}
-		if (expression.type === 'Literal') {
+		if (expression.type === "Literal") {
 			return (expression as Literal).value;
-		} else if (expression.type === 'Placeholder') {
-			return params[(expression as Placeholder).parameterIndex];
+		} else if (expression.type === "Placeholder") {
+			return params[(expression as Placeholder).parameterIndex]!;
 		}
 		return null;
 	}

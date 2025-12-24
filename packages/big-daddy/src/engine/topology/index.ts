@@ -11,29 +11,34 @@
  * allowing access to DurableObject state and environment while keeping concerns separated.
  */
 
-import { DurableObject } from 'cloudflare:workers';
-import type { Statement, InsertStatement, Expression, BinaryExpression, Literal, Placeholder } from '@databases/sqlite-ast';
-
+import { DurableObject } from "cloudflare:workers";
 import type {
+	BinaryExpression,
+	Expression,
+	InsertStatement,
+	Literal,
+	Placeholder,
+	Statement,
+} from "@databases/sqlite-ast";
+import { AdministrationOperations } from "./administration";
+import { CRUDOperations } from "./crud";
+import { ReshardingOperations } from "./resharding";
+import { initializeSchemaTables } from "./tables";
+import type {
+	AsyncJob,
+	IndexStatus,
+	QueryPlanData,
+	ReshardingState,
+	SqlParam,
 	StorageNode,
 	TableMetadata,
 	TableShard,
-	ReshardingState,
-	VirtualIndex,
-	VirtualIndexEntry,
-	AsyncJob,
 	TopologyData,
 	TopologyUpdates,
-	IndexStatus,
-	QueryPlanData,
-	SqlParam,
-} from './types';
-
-import { initializeSchemaTables } from './tables';
-import { CRUDOperations } from './crud';
-import { ReshardingOperations } from './resharding';
-import { VirtualIndexOperations } from './virtual-indexes';
-import { AdministrationOperations } from './administration';
+	VirtualIndex,
+	VirtualIndexEntry,
+} from "./types";
+import { VirtualIndexOperations } from "./virtual-indexes";
 
 /**
  * Topology Durable Object for managing cluster topology
@@ -65,7 +70,11 @@ export class Topology extends DurableObject<Env> {
 		this.resharding = new ReshardingOperations(this.ctx.storage, this.env);
 		this.virtualIndexes = new VirtualIndexOperations(this.ctx.storage);
 		// AdministrationOperations needs reference to Topology for cross-module method access
-		this.administration = new AdministrationOperations(this.ctx.storage, this.env, this);
+		this.administration = new AdministrationOperations(
+			this.ctx.storage,
+			this.env,
+			this,
+		);
 
 		// Set up recurring alarm to check capacity every 5 minutes
 		this.ctx.storage.setAlarm(Date.now() + 5 * 60 * 1000);
@@ -82,11 +91,13 @@ export class Topology extends DurableObject<Env> {
 	 * Check if the topology has been created
 	 */
 	public isCreated(): boolean {
-		const result = this.ctx.storage.sql.exec(`SELECT value FROM cluster_metadata WHERE key = 'created'`).toArray() as unknown as {
+		const result = this.ctx.storage.sql
+			.exec(`SELECT value FROM cluster_metadata WHERE key = 'created'`)
+			.toArray() as unknown as {
 			value: string;
 		}[];
 
-		return result.length > 0 && result[0]!.value === 'true';
+		return result.length > 0 && result[0]?.value === "true";
 	}
 
 	/**
@@ -94,7 +105,9 @@ export class Topology extends DurableObject<Env> {
 	 */
 	public ensureCreated(): void {
 		if (!this.isCreated()) {
-			throw new Error('Topology not created. Call create() first to initialize the cluster.');
+			throw new Error(
+				"Topology not created. Call create() first to initialize the cluster.",
+			);
 		}
 	}
 
@@ -106,7 +119,9 @@ export class Topology extends DurableObject<Env> {
 	 * Create the cluster topology with a fixed number of storage nodes
 	 * This can only be called once - storage nodes cannot be modified after creation
 	 */
-	async create(numNodes: number): Promise<{ success: boolean; error?: string }> {
+	async create(
+		numNodes: number,
+	): Promise<{ success: boolean; error?: string }> {
 		return this.crud.create(numNodes);
 	}
 
@@ -121,7 +136,9 @@ export class Topology extends DurableObject<Env> {
 	/**
 	 * Batch update topology information
 	 */
-	async updateTopology(updates: TopologyUpdates): Promise<{ success: boolean }> {
+	async updateTopology(
+		updates: TopologyUpdates,
+	): Promise<{ success: boolean }> {
 		this.ensureCreated();
 		return this.crud.updateTopology(updates);
 	}
@@ -133,9 +150,17 @@ export class Topology extends DurableObject<Env> {
 	/**
 	 * Create pending shards for resharding operation
 	 */
-	async createPendingShards(tableName: string, newShardCount: number, changeLogId: string): Promise<TableShard[]> {
+	async createPendingShards(
+		tableName: string,
+		newShardCount: number,
+		changeLogId: string,
+	): Promise<TableShard[]> {
 		this.ensureCreated();
-		return this.resharding.createPendingShards(tableName, newShardCount, changeLogId);
+		return this.resharding.createPendingShards(
+			tableName,
+			newShardCount,
+			changeLogId,
+		);
 	}
 
 	/**
@@ -165,7 +190,10 @@ export class Topology extends DurableObject<Env> {
 	/**
 	 * Mark resharding as failed
 	 */
-	async markReshardingFailed(tableName: string, errorMessage: string): Promise<void> {
+	async markReshardingFailed(
+		tableName: string,
+		errorMessage: string,
+	): Promise<void> {
 		this.ensureCreated();
 		return this.resharding.markReshardingFailed(tableName, errorMessage);
 	}
@@ -182,7 +210,10 @@ export class Topology extends DurableObject<Env> {
 	 * Delete a virtual shard
 	 * Only allows deletion of shards with status 'to_be_deleted', 'pending', or 'failed'
 	 */
-	async deleteVirtualShard(tableName: string, shardId: number): Promise<{ success: boolean; error?: string }> {
+	async deleteVirtualShard(
+		tableName: string,
+		shardId: number,
+	): Promise<{ success: boolean; error?: string }> {
 		this.ensureCreated();
 		return this.resharding.deleteVirtualShard(tableName, shardId);
 	}
@@ -191,7 +222,10 @@ export class Topology extends DurableObject<Env> {
 	 * Mark target shards as 'failed' when resharding fails
 	 * Used for cleanup when resharding operations encounter errors
 	 */
-	async markTargetShardsAsFailed(tableName: string, targetShardIds: number[]): Promise<void> {
+	async markTargetShardsAsFailed(
+		tableName: string,
+		targetShardIds: number[],
+	): Promise<void> {
 		this.ensureCreated();
 		return this.resharding.markTargetShardsAsFailed(tableName, targetShardIds);
 	}
@@ -207,24 +241,40 @@ export class Topology extends DurableObject<Env> {
 		indexName: string,
 		tableName: string,
 		columns: string[],
-		indexType: 'hash' | 'unique',
+		indexType: "hash" | "unique",
 	): Promise<{ success: boolean; error?: string }> {
 		this.ensureCreated();
-		return this.virtualIndexes.createVirtualIndex(indexName, tableName, columns, indexType);
+		return this.virtualIndexes.createVirtualIndex(
+			indexName,
+			tableName,
+			columns,
+			indexType,
+		);
 	}
 
 	/**
 	 * Update virtual index status
 	 */
-	async updateIndexStatus(indexName: string, status: IndexStatus, errorMessage?: string): Promise<void> {
+	async updateIndexStatus(
+		indexName: string,
+		status: IndexStatus,
+		errorMessage?: string,
+	): Promise<void> {
 		this.ensureCreated();
-		return this.virtualIndexes.updateIndexStatus(indexName, status, errorMessage);
+		return this.virtualIndexes.updateIndexStatus(
+			indexName,
+			status,
+			errorMessage,
+		);
 	}
 
 	/**
 	 * Batch upsert multiple virtual index entries
 	 */
-	async batchUpsertIndexEntries(indexName: string, entries: Array<{ keyValue: string; shardIds: number[] }>): Promise<{ count: number }> {
+	async batchUpsertIndexEntries(
+		indexName: string,
+		entries: Array<{ keyValue: string; shardIds: number[] }>,
+	): Promise<{ count: number }> {
 		this.ensureCreated();
 		return this.virtualIndexes.batchUpsertIndexEntries(indexName, entries);
 	}
@@ -232,7 +282,10 @@ export class Topology extends DurableObject<Env> {
 	/**
 	 * Get shard IDs for a specific indexed value
 	 */
-	async getIndexedShards(indexName: string, keyValue: string): Promise<number[] | null> {
+	async getIndexedShards(
+		indexName: string,
+		keyValue: string,
+	): Promise<number[] | null> {
 		this.ensureCreated();
 		return this.virtualIndexes.getIndexedShards(indexName, keyValue);
 	}
@@ -240,32 +293,48 @@ export class Topology extends DurableObject<Env> {
 	/**
 	 * Add a shard ID to an index entry
 	 */
-	async addShardToIndexEntry(indexName: string, keyValue: string, shardId: number): Promise<void> {
+	async addShardToIndexEntry(
+		indexName: string,
+		keyValue: string,
+		shardId: number,
+	): Promise<void> {
 		// Skip if topology not created
 		if (!this.isCreated()) {
 			return;
 		}
-		return this.virtualIndexes.addShardToIndexEntry(indexName, keyValue, shardId);
+		return this.virtualIndexes.addShardToIndexEntry(
+			indexName,
+			keyValue,
+			shardId,
+		);
 	}
 
 	/**
 	 * Remove a shard ID from an index entry
 	 */
-	async removeShardFromIndexEntry(indexName: string, keyValue: string, shardId: number): Promise<void> {
+	async removeShardFromIndexEntry(
+		indexName: string,
+		keyValue: string,
+		shardId: number,
+	): Promise<void> {
 		// Skip if topology not created
 		if (!this.isCreated()) {
 			return;
 		}
-		return this.virtualIndexes.removeShardFromIndexEntry(indexName, keyValue, shardId);
+		return this.virtualIndexes.removeShardFromIndexEntry(
+			indexName,
+			keyValue,
+			shardId,
+		);
 	}
 
 	/**
 	 * Maintain indexes for DELETE operation (synchronous)
 	 */
 	async maintainIndexesForDelete(
-		rows: Record<string, any>[],
+		rows: Record<string, SqlParam>[],
 		indexes: Array<{ index_name: string; columns: string }>,
-		shardId: number
+		shardId: number,
 	): Promise<void> {
 		// Skip if topology not created or no indexes
 		if (!this.isCreated() || indexes.length === 0) {
@@ -278,16 +347,21 @@ export class Topology extends DurableObject<Env> {
 	 * Maintain indexes for UPDATE operation (synchronous)
 	 */
 	async maintainIndexesForUpdate(
-		oldRows: Record<string, any>[],
-		newRows: Record<string, any>[],
+		oldRows: Record<string, SqlParam>[],
+		newRows: Record<string, SqlParam>[],
 		indexes: Array<{ index_name: string; columns: string }>,
-		shardId: number
+		shardId: number,
 	): Promise<void> {
 		// Skip if topology not created or no indexes
 		if (!this.isCreated() || indexes.length === 0) {
 			return;
 		}
-		return this.virtualIndexes.maintainIndexesForUpdate(oldRows, newRows, indexes, shardId);
+		return this.virtualIndexes.maintainIndexesForUpdate(
+			oldRows,
+			newRows,
+			indexes,
+			shardId,
+		);
 	}
 
 	/**
@@ -301,7 +375,10 @@ export class Topology extends DurableObject<Env> {
 	/**
 	 * Get all index entries that include a specific shard
 	 */
-	async getIndexEntriesForShard(indexName: string, shardId: number): Promise<Array<{ key_value: string }>> {
+	async getIndexEntriesForShard(
+		indexName: string,
+		shardId: number,
+	): Promise<Array<{ key_value: string }>> {
 		this.ensureCreated();
 		return this.virtualIndexes.getIndexEntriesForShard(indexName, shardId);
 	}
@@ -311,7 +388,7 @@ export class Topology extends DurableObject<Env> {
 	 */
 	async batchMaintainIndexes(
 		changes: Array<{
-			operation: 'add' | 'remove';
+			operation: "add" | "remove";
 			index_name: string;
 			key_value: string;
 			shard_id: number;
@@ -328,9 +405,19 @@ export class Topology extends DurableObject<Env> {
 	/**
 	 * Get all topology data needed for query planning
 	 */
-	async getQueryPlanData(tableName: string, statement: Statement, params: SqlParam[], correlationId?: string): Promise<QueryPlanData> {
+	async getQueryPlanData(
+		tableName: string,
+		statement: Statement,
+		params: SqlParam[],
+		correlationId?: string,
+	): Promise<QueryPlanData> {
 		this.ensureCreated();
-		return this.administration.getQueryPlanData(tableName, statement, params, correlationId);
+		return this.administration.getQueryPlanData(
+			tableName,
+			statement,
+			params,
+			correlationId,
+		);
 	}
 
 	/**
@@ -338,12 +425,17 @@ export class Topology extends DurableObject<Env> {
 	 */
 	async createAsyncJob(
 		jobId: string,
-		jobType: 'reshard_table' | 'build_index' | 'maintain_index',
+		jobType: "reshard_table" | "build_index" | "maintain_index",
 		tableName: string,
-		metadata?: Record<string, any>,
+		metadata?: Record<string, unknown>,
 	): Promise<void> {
 		this.ensureCreated();
-		return this.administration.createAsyncJob(jobId, jobType, tableName, metadata);
+		return this.administration.createAsyncJob(
+			jobId,
+			jobType,
+			tableName,
+			metadata,
+		);
 	}
 
 	/**
@@ -389,7 +481,10 @@ export class Topology extends DurableObject<Env> {
 	/**
 	 * Async job tracking: Get all async jobs for a table
 	 */
-	async getAsyncJobsForTable(tableName: string, limit: number = 100): Promise<AsyncJob[]> {
+	async getAsyncJobsForTable(
+		tableName: string,
+		limit: number = 100,
+	): Promise<AsyncJob[]> {
 		this.ensureCreated();
 		return this.administration.getAsyncJobsForTable(tableName, limit);
 	}
@@ -411,34 +506,57 @@ export class Topology extends DurableObject<Env> {
 	 */
 	async determineShardTargets(
 		statement: Statement,
-		tableMetadata: any,
-		tableShards: Array<{ table_name: string; shard_id: number; node_id: string }>,
-		virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
+		tableMetadata: TableMetadata,
+		tableShards: Array<{
+			table_name: string;
+			shard_id: number;
+			node_id: string;
+		}>,
+		virtualIndexes: Array<{
+			index_name: string;
+			columns: string;
+			index_type: "hash" | "unique";
+		}>,
 		params: SqlParam[],
 	): Promise<Array<{ table_name: string; shard_id: number; node_id: string }>> {
-		return this.administration.determineShardTargets(statement, tableMetadata, tableShards, virtualIndexes, params);
+		return this.administration.determineShardTargets(
+			statement,
+			tableMetadata,
+			tableShards,
+			virtualIndexes,
+			params,
+		);
 	}
 
 	/**
 	 * Calculate shard ID for INSERT based on shard key value
 	 * Used by AdministrationOperations
 	 */
-	public getShardIdForInsert(statement: InsertStatement, tableMetadata: TableMetadata, numShards: number, params: SqlParam[]): number {
+	public getShardIdForInsert(
+		statement: InsertStatement,
+		tableMetadata: TableMetadata,
+		numShards: number,
+		params: SqlParam[],
+	): number {
 		// Find the shard key column in the INSERT
-		const columnIndex = statement.columns?.findIndex((col) => col.name === tableMetadata.shard_key);
+		const columnIndex = statement.columns?.findIndex(
+			(col) => col.name === tableMetadata.shard_key,
+		);
 
 		if (columnIndex === undefined || columnIndex === -1) {
-			throw new Error(`Shard key '${tableMetadata.shard_key}' not found in INSERT statement`);
+			throw new Error(
+				`Shard key '${tableMetadata.shard_key}' not found in INSERT statement`,
+			);
 		}
 
 		// Get the value for the shard key
 		// statement.values[0] is an array of expressions, one for each column
 		if (statement.values.length === 0) {
-			throw new Error('INSERT statement has no values');
+			throw new Error("INSERT statement has no values");
 		}
 
-		const valueExpression = statement.values[0][columnIndex];
-		const value = this.extractValueFromExpression(valueExpression, params);
+		const valueExpression = statement.values[0]?.[columnIndex];
+		const value = this.extractValueFromExpression(valueExpression!, params);
 
 		if (value === null || value === undefined) {
 			throw new Error(`Could not resolve shard key value from parameters`);
@@ -459,32 +577,43 @@ export class Topology extends DurableObject<Env> {
 	 * @param shardIds - Array of actual shard IDs (may not be 0-indexed after resharding)
 	 * @param params - Query parameters
 	 */
-	public getShardIdFromWhere(where: Expression, tableMetadata: TableMetadata, shardIds: number[], params: SqlParam[]): number | null {
+	public getShardIdFromWhere(
+		where: Expression,
+		tableMetadata: TableMetadata,
+		shardIds: number[],
+		params: SqlParam[],
+	): number | null {
 		if (!where) {
 			return null;
 		}
 
-		if (where.type === 'BinaryExpression') {
+		if (where.type === "BinaryExpression") {
 			const binExpr = where as BinaryExpression;
 
 			// Handle simple equality on the shard key
-			if (binExpr.operator === '=') {
+			if (binExpr.operator === "=") {
 				let columnName: string | null = null;
-				let valueExpression: any | null = null;
+				let valueExpression: Expression | null = null;
 
-				if (binExpr.left.type === 'Identifier') {
-					columnName = (binExpr.left as any).name;
+				if (binExpr.left.type === "Identifier") {
+					columnName = binExpr.left.name;
 					valueExpression = binExpr.right;
-				} else if (binExpr.right.type === 'Identifier') {
-					columnName = (binExpr.right as any).name;
+				} else if (binExpr.right.type === "Identifier") {
+					columnName = binExpr.right.name;
 					valueExpression = binExpr.left;
 				}
 
 				if (columnName === tableMetadata.shard_key && valueExpression) {
-					const value = this.extractValueFromExpression(valueExpression, params);
+					const value = this.extractValueFromExpression(
+						valueExpression,
+						params,
+					);
 					if (value !== null && value !== undefined) {
 						// Hash to index, then map to actual shard ID (handles non-0-indexed shards after resharding)
-						const hashIndex = this.hashToShardId(String(value), shardIds.length);
+						const hashIndex = this.hashToShardId(
+							String(value),
+							shardIds.length,
+						);
 						return shardIds[hashIndex]!;
 					}
 				}
@@ -492,10 +621,10 @@ export class Topology extends DurableObject<Env> {
 
 			// Handle IN expressions on shard key - return null to indicate multiple potential shards
 			// These should be handled by virtual index lookup or full shard scan
-			if (binExpr.operator === 'IN') {
+			if (binExpr.operator === "IN") {
 				let columnName: string | null = null;
-				if (binExpr.left.type === 'Identifier') {
-					columnName = (binExpr.left as any).name;
+				if (binExpr.left.type === "Identifier") {
+					columnName = binExpr.left.name;
 				}
 				if (columnName === tableMetadata.shard_key) {
 					// IN expressions can map to multiple shards, return null to let virtual index handle it
@@ -504,15 +633,25 @@ export class Topology extends DurableObject<Env> {
 			}
 
 			// Handle AND expressions - recursively check both sides
-			if (binExpr.operator === 'AND') {
+			if (binExpr.operator === "AND") {
 				// Try to find shard key condition on left side
-				const leftShardId = this.getShardIdFromWhere(binExpr.left, tableMetadata, shardIds, params);
+				const leftShardId = this.getShardIdFromWhere(
+					binExpr.left,
+					tableMetadata,
+					shardIds,
+					params,
+				);
 				if (leftShardId !== null) {
 					return leftShardId;
 				}
 
 				// Try to find shard key condition on right side
-				const rightShardId = this.getShardIdFromWhere(binExpr.right, tableMetadata, shardIds, params);
+				const rightShardId = this.getShardIdFromWhere(
+					binExpr.right,
+					tableMetadata,
+					shardIds,
+					params,
+				);
 				if (rightShardId !== null) {
 					return rightShardId;
 				}
@@ -525,14 +664,17 @@ export class Topology extends DurableObject<Env> {
 	/**
 	 * Extract value from an expression node
 	 */
-	private extractValueFromExpression(expression: Expression, params: SqlParam[]): any {
+	private extractValueFromExpression(
+		expression: Expression,
+		params: SqlParam[],
+	): SqlParam {
 		if (!expression) {
 			return null;
 		}
-		if (expression.type === 'Literal') {
+		if (expression.type === "Literal") {
 			return (expression as Literal).value;
-		} else if (expression.type === 'Placeholder') {
-			return params[(expression as Placeholder).parameterIndex];
+		} else if (expression.type === "Placeholder") {
+			return params[(expression as Placeholder).parameterIndex]!;
 		}
 		return null;
 	}
@@ -543,7 +685,11 @@ export class Topology extends DurableObject<Env> {
 	 * @param numShards - Number of shards to distribute across
 	 * @param offset - Optional offset for shard IDs (for handling non-zero starting shard IDs)
 	 */
-	private hashToShardId(value: string, numShards: number, offset: number = 0): number {
+	private hashToShardId(
+		value: string,
+		numShards: number,
+		offset: number = 0,
+	): number {
 		let hash = 0;
 		for (let i = 0; i < value.length; i++) {
 			hash = (hash << 5) - hash + value.charCodeAt(i);
@@ -558,11 +704,29 @@ export class Topology extends DurableObject<Env> {
 	async getShardsFromIndexedWhere(
 		where: Expression,
 		tableName: string,
-		tableShards: Array<{ table_name: string; shard_id: number; node_id: string }>,
-		virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
+		tableShards: Array<{
+			table_name: string;
+			shard_id: number;
+			node_id: string;
+		}>,
+		virtualIndexes: Array<{
+			index_name: string;
+			columns: string;
+			index_type: "hash" | "unique";
+		}>,
 		params: SqlParam[],
-	): Promise<Array<{ table_name: string; shard_id: number; node_id: string }> | null> {
-		return this.virtualIndexes.getShardsFromIndexedWhere(where, tableName, tableShards, virtualIndexes, params);
+	): Promise<Array<{
+		table_name: string;
+		shard_id: number;
+		node_id: string;
+	}> | null> {
+		return this.virtualIndexes.getShardsFromIndexedWhere(
+			where,
+			tableName,
+			tableShards,
+			virtualIndexes,
+			params,
+		);
 	}
 
 	/**
@@ -574,7 +738,12 @@ export class Topology extends DurableObject<Env> {
 		shard: { table_name: string; shard_id: number; node_id: string },
 		params: SqlParam[],
 	): Promise<void> {
-		return this.virtualIndexes.maintainIndexesForInsert(statement, indexes, shard, params);
+		return this.virtualIndexes.maintainIndexesForInsert(
+			statement,
+			indexes,
+			shard,
+			params,
+		);
 	}
 }
 

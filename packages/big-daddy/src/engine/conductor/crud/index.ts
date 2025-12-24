@@ -2,7 +2,7 @@
  * CRUD operations - SELECT, INSERT, UPDATE, DELETE
  */
 
-export { handleSelect } from './select';
-export { handleInsert } from './insert';
-export { handleUpdate } from './update';
-export { handleDelete } from './delete';
+export { handleDelete } from "./delete";
+export { handleInsert } from "./insert";
+export { handleSelect } from "./select";
+export { handleUpdate } from "./update";

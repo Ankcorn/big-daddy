@@ -1,5 +1,5 @@
-import { logger } from '../../../logger';
-import type { QueryResult, QueryHandlerContext } from '../types';
+import { logger } from "../../../logger";
+import type { QueryHandlerContext, QueryResult } from "../types";
 
 /**
  * Handle DROP INDEX statement execution
@@ -23,7 +23,9 @@ export async function handleDropIndex(
 		const topologyData = await topologyStub.getTopology();
 
 		// Step 1: Find the index
-		let index = topologyData.virtual_indexes.find((i) => i.index_name === indexName);
+		let index = topologyData.virtual_indexes.find(
+			(i) => i.index_name === indexName,
+		);
 
 		// If tableName provided, also verify it matches
 		if (index && tableName && index.table_name !== tableName) {
@@ -33,7 +35,7 @@ export async function handleDropIndex(
 		// If index not found
 		if (!index) {
 			if (ifExists) {
-				logger.info`DROP INDEX IF EXISTS - index not found ${{indexName}}`;
+				logger.info`DROP INDEX IF EXISTS - index not found ${{ indexName }}`;
 				return {
 					rows: [],
 					rowsAffected: 0,
@@ -45,7 +47,9 @@ export async function handleDropIndex(
 		const actualTableName = index.table_name;
 
 		// Step 2: Get all shards for this table
-		const tableShards = topologyData.table_shards.filter((s) => s.table_name === actualTableName);
+		const tableShards = topologyData.table_shards.filter(
+			(s) => s.table_name === actualTableName,
+		);
 		const uniqueNodes = [...new Set(tableShards.map((s) => s.node_id))];
 
 		// Step 3: Remove virtual index from topology
@@ -64,12 +68,12 @@ export async function handleDropIndex(
 					});
 				} catch (error) {
 					// Log but don't fail - SQLite might not have the index on this shard
-					logger.warn`Failed to drop index on storage node ${{indexName}} ${{nodeId}} ${{error: (error as Error).message}}`;
+					logger.warn`Failed to drop index on storage node ${{ indexName }} ${{ nodeId }} ${{ error: (error as Error).message }}`;
 				}
 			}),
 		);
 
-		logger.info`Index dropped successfully ${{indexName}} ${{table: actualTableName}} ${{nodesAffected: uniqueNodes.length}}`;
+		logger.info`Index dropped successfully ${{ indexName }} ${{ table: actualTableName }} ${{ nodesAffected: uniqueNodes.length }}`;
 
 		return {
 			rows: [],
@@ -103,9 +107,11 @@ export async function handleShowIndexes(
 		}
 
 		// Get indexes for this table
-		const indexes = topologyData.virtual_indexes.filter((i) => i.table_name === tableName);
+		const indexes = topologyData.virtual_indexes.filter(
+			(i) => i.table_name === tableName,
+		);
 
-		logger.info`SHOW INDEXES executed ${{table: tableName}} ${{indexCount: indexes.length}}`;
+		logger.info`SHOW INDEXES executed ${{ table: tableName }} ${{ indexCount: indexes.length }}`;
 
 		const rows = indexes.map((idx) => ({
 			index_name: idx.index_name,

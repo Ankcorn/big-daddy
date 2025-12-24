@@ -1,15 +1,20 @@
-import type { DeleteStatement, SelectStatement } from '@databases/sqlite-ast';
-import { logger } from '../../../logger';
-import type { QueryResult, QueryHandlerContext, ShardInfo } from '../types';
-import { mergeResultsSimple } from '../utils';
+import type { DeleteStatement, SelectStatement } from "@databases/sqlite-ast";
+import { logger } from "../../../logger";
+import type { SqlParam as TopologySqlParam } from "../../topology/types";
+import type {
+	QueryHandlerContext,
+	QueryResult,
+	ShardInfo,
+	SqlParam,
+} from "../types";
+import { mergeResultsSimple } from "../utils";
+import { prepareIndexMaintenanceQueries } from "../utils/index-maintenance";
 import {
 	executeOnShards,
-	logWriteIfResharding,
-	invalidateCacheForWrite,
 	getCachedQueryPlanData,
-} from '../utils/write';
-import { prepareIndexMaintenanceQueries } from '../utils/index-maintenance';
-
+	invalidateCacheForWrite,
+	logWriteIfResharding,
+} from "../utils/write";
 
 /**
  * Build SELECT statement for capturing indexed columns in DELETE rows
@@ -21,14 +26,16 @@ function buildSelectForIndexedColumns(
 	const indexedColumns = new Set<string>();
 	for (const index of virtualIndexes) {
 		const columns = JSON.parse(index.columns) as string[];
-		columns.forEach((col) => indexedColumns.add(col));
+		for (const col of columns) {
+			indexedColumns.add(col);
+		}
 	}
 
 	return {
-		type: 'SelectStatement',
+		type: "SelectStatement",
 		select: [...indexedColumns].map((column) => ({
-			type: 'SelectClause',
-			expression: { type: 'Identifier', name: column },
+			type: "SelectClause",
+			expression: { type: "Identifier", name: column },
 		})),
 		from: deleteStatement.table,
 		where: deleteStatement.where,
@@ -50,15 +57,20 @@ function buildSelectForIndexedColumns(
 export async function handleDelete(
 	statement: DeleteStatement,
 	query: string,
-	params: any[],
+	params: SqlParam[],
 	context: QueryHandlerContext,
 ): Promise<QueryResult> {
 	const tableName = statement.table.name;
 
 	// STEP 1: Get cached query plan data
-	const { planData } = await getCachedQueryPlanData(context, tableName, statement, params);
+	const { planData } = await getCachedQueryPlanData(
+		context,
+		tableName,
+		statement,
+		params,
+	);
 
-	logger.info`Query plan determined for DELETE ${{shardsSelected: planData.shardsToQuery.length}} ${{indexesUsed: planData.virtualIndexes.length}}`;
+	logger.info`Query plan determined for DELETE ${{ shardsSelected: planData.shardsToQuery.length }} ${{ indexesUsed: planData.virtualIndexes.length }}`;
 
 	const shardsToQuery = planData.shardsToQuery;
 
@@ -66,9 +78,10 @@ export async function handleDelete(
 	await logWriteIfResharding(tableName, statement.type, query, params, context);
 
 	// STEP 3: Prepare queries (SELECT + DELETE batch if indexes, else just DELETE)
-	const selectStatement = planData.virtualIndexes.length > 0
-		? buildSelectForIndexedColumns(statement, planData.virtualIndexes)
-		: undefined;
+	const selectStatement =
+		planData.virtualIndexes.length > 0
+			? buildSelectForIndexedColumns(statement, planData.virtualIndexes)
+			: undefined;
 
 	const queries = prepareIndexMaintenanceQueries(
 		planData.virtualIndexes.length > 0,
@@ -80,7 +93,7 @@ export async function handleDelete(
 	// STEP 4: Execute on shards
 	const execResult = await executeOnShards(context, shardsToQuery, queries);
 
-	logger.info`Shard execution completed for DELETE ${{shardsQueried: shardsToQuery.length}}`;
+	logger.info`Shard execution completed for DELETE ${{ shardsQueried: shardsToQuery.length }}`;
 
 	// STEP 5: Synchronous index maintenance
 	if (planData.virtualIndexes.length > 0) {
@@ -91,17 +104,32 @@ export async function handleDelete(
 		const resultsArray = execResult.results as QueryResult[][];
 		for (let i = 0; i < shardsToQuery.length; i++) {
 			const [selectResult] = resultsArray[i]!;
-			const rows = (selectResult as any).rows || [];
-			const shardId = shardsToQuery[i]!.shard_id;
+			const rows = (selectResult?.rows || []) as Record<
+				string,
+				TopologySqlParam
+			>[];
+			const shard = shardsToQuery[i];
+			if (!shard) continue;
+			const shardId = shard.shard_id;
 
 			if (rows.length > 0) {
-				await topologyStub.maintainIndexesForDelete(rows, planData.virtualIndexes, shardId);
+				await topologyStub.maintainIndexesForDelete(
+					rows,
+					planData.virtualIndexes,
+					shardId,
+				);
 			}
 		}
 	}
 
 	// STEP 6: Invalidate cache entries for write operation
-	invalidateCacheForWrite(context, tableName, statement, planData.virtualIndexes, params);
+	invalidateCacheForWrite(
+		context,
+		tableName,
+		statement,
+		planData.virtualIndexes,
+		params,
+	);
 
 	// STEP 7: Merge results from all shards
 	let results: QueryResult[];
@@ -125,7 +153,7 @@ export async function handleDelete(
 		duration: 0,
 	}));
 
-	logger.info`DELETE query completed ${{shardsQueried: shardsToQuery.length}} ${{rowsAffected: result.rowsAffected}}`;
+	logger.info`DELETE query completed ${{ shardsQueried: shardsToQuery.length }} ${{ rowsAffected: result.rowsAffected }}`;
 
 	return result;
 }

@@ -11,40 +11,47 @@
  * 3. Update index status to 'ready' or 'failed'
  */
 
-import { Effect, Data } from 'effect';
-import { logger } from '../../logger';
-import { createConductor } from '../../index';
-import type { IndexBuildJob } from '../queue/types';
+import { Data, Effect } from "effect";
+import { createConductor } from "../../index";
+import type { IndexBuildJob } from "../queue/types";
+import type { Topology } from "../topology";
 
 /**
  * Error types for build index operations
  */
-export class NoShardsFoundError extends Data.TaggedError('NoShardsFoundError')<{
+export class NoShardsFoundError extends Data.TaggedError("NoShardsFoundError")<{
 	tableName: string;
 }> {}
 
-export class TopologyFetchError extends Data.TaggedError('TopologyFetchError')<{
+export class TopologyFetchError extends Data.TaggedError("TopologyFetchError")<{
 	databaseId: string;
 	cause?: unknown;
 }> {}
 
-export class IndexEntriesUpsertError extends Data.TaggedError('IndexEntriesUpsertError')<{
+export class IndexEntriesUpsertError extends Data.TaggedError(
+	"IndexEntriesUpsertError",
+)<{
 	indexName: string;
 	cause?: unknown;
 }> {}
 
-export class IndexStatusUpdateError extends Data.TaggedError('IndexStatusUpdateError')<{
+export class IndexStatusUpdateError extends Data.TaggedError(
+	"IndexStatusUpdateError",
+)<{
 	indexName: string;
-	status: 'ready' | 'failed';
+	status: "ready" | "failed";
 	cause?: unknown;
 }> {}
 
 /**
  * Build a composite key value from row data
  */
-function buildKeyValue(row: Record<string, any>, columns: string[]): string | null {
+function buildKeyValue(
+	row: Record<string, unknown>,
+	columns: string[],
+): string | null {
 	if (columns.length === 1) {
-		const value: any = row[columns[0]!];
+		const value = row[columns[0]!];
 		// Skip NULL values
 		if (value === null || value === undefined) {
 			return null;
@@ -71,33 +78,56 @@ function buildKeyValue(row: Record<string, any>, columns: string[]): string | nu
 function processBuildIndexJobEffect(
 	job: IndexBuildJob,
 	env: Env,
-	correlationId?: string
+	correlationId?: string,
 ): Effect.Effect<
 	void,
-	NoShardsFoundError | TopologyFetchError | IndexEntriesUpsertError | IndexStatusUpdateError
+	| NoShardsFoundError
+	| TopologyFetchError
+	| IndexEntriesUpsertError
+	| IndexStatusUpdateError
 > {
 	const topologyId = env.TOPOLOGY.idFromName(job.database_id);
-	const topologyStub = env.TOPOLOGY.get(topologyId);
+	const topologyStub = env.TOPOLOGY.get(
+		topologyId,
+	) as DurableObjectStub<Topology>;
 
 	return Effect.gen(function* () {
-		const conductor = createConductor(job.database_id, correlationId ?? '', env);
+		const conductor = createConductor(
+			job.database_id,
+			correlationId ?? "",
+			env,
+		);
 
 		// 1. Query distinct values with shard info via conductor
 		// The _virtualShard column tracks which shard each row is on
-		const columnList = job.columns.join(', ');
+		const columnList = job.columns.join(", ");
 		const distinctQuery = `SELECT DISTINCT ${columnList}, _virtualShard FROM ${job.table_name}`;
 
-		type DistinctRow = Record<string, any> & { _virtualShard: number };
+		type DistinctRow = Record<string, unknown> & { _virtualShard: number };
 
 		const queryResult = yield* Effect.tryPromise({
 			try: async () => {
-				return await conductor.sql<DistinctRow>([distinctQuery] as any);
+				return await conductor.sql<DistinctRow>([
+					distinctQuery,
+				] as unknown as TemplateStringsArray);
 			},
-			catch: (error) =>
-				new TopologyFetchError({
+			catch: (error) => {
+				// Extract the original error message from nested Effect/DO errors
+				// Effect errors may be wrapped multiple layers deep
+				let errorMessage: string;
+
+				// Extract error message - Effect's runPromise may lose TaggedError properties,
+				// but we ensure the message contains the original error text
+				if (error instanceof Error) {
+					errorMessage = error.message;
+				} else {
+					errorMessage = String(error);
+				}
+				return new TopologyFetchError({
 					databaseId: job.database_id,
-					cause: error instanceof Error ? error.message : String(error),
-				}),
+					cause: errorMessage,
+				});
+			},
 		});
 
 		// 2. Build index entries mapping distinct values to their shards
@@ -113,25 +143,37 @@ function processBuildIndexJobEffect(
 			if (!valueToShards.has(keyValue)) {
 				valueToShards.set(keyValue, new Set());
 			}
-			valueToShards.get(keyValue)!.add(shardId);
+			valueToShards.get(keyValue)?.add(shardId);
 		}
 
-		const entries = Array.from(valueToShards.entries()).map(([keyValue, shardIdSet]) => ({
-			keyValue,
-			shardIds: Array.from(shardIdSet).sort((a, b) => a - b),
-		}));
+		const entries = Array.from(valueToShards.entries()).map(
+			([keyValue, shardIdSet]) => ({
+				keyValue,
+				shardIds: Array.from(shardIdSet).sort((a, b) => a - b),
+			}),
+		);
 
 		if (entries.length > 0) {
 			yield* Effect.tryPromise({
-				try: () => topologyStub.batchUpsertIndexEntries(job.index_name, entries),
-				catch: (error) => new IndexEntriesUpsertError({ indexName: job.index_name, cause: error }),
+				try: () =>
+					topologyStub.batchUpsertIndexEntries(job.index_name, entries),
+				catch: (error) =>
+					new IndexEntriesUpsertError({
+						indexName: job.index_name,
+						cause: error,
+					}),
 			});
 		}
 
 		// 4. Update index status to 'ready'
 		yield* Effect.tryPromise({
-			try: () => topologyStub.updateIndexStatus(job.index_name, 'ready'),
-			catch: (error) => new IndexStatusUpdateError({ indexName: job.index_name, status: 'ready', cause: error }),
+			try: () => topologyStub.updateIndexStatus(job.index_name, "ready"),
+			catch: (error) =>
+				new IndexStatusUpdateError({
+					indexName: job.index_name,
+					status: "ready",
+					cause: error,
+				}),
 		});
 	}).pipe(
 		// Add context to all logs and errors in this Effect
@@ -139,8 +181,8 @@ function processBuildIndexJobEffect(
 			indexName: job.index_name,
 			table: job.table_name,
 			databaseId: job.database_id,
-			correlationId: correlationId ?? 'none',
-		})
+			correlationId: correlationId ?? "none",
+		}),
 	);
 }
 
@@ -148,13 +190,17 @@ function processBuildIndexJobEffect(
  * Convert typed error to user-friendly message
  */
 function errorToMessage(
-	error: NoShardsFoundError | TopologyFetchError | IndexEntriesUpsertError | IndexStatusUpdateError
+	error:
+		| NoShardsFoundError
+		| TopologyFetchError
+		| IndexEntriesUpsertError
+		| IndexStatusUpdateError,
 ): string {
 	if (error instanceof NoShardsFoundError) {
 		return `No shards found for table '${error.tableName}'`;
 	}
 	if (error instanceof TopologyFetchError) {
-		const causeStr = error.cause ? `: ${error.cause}` : '';
+		const causeStr = error.cause ? `: ${error.cause}` : "";
 		return `Failed to fetch topology for database '${error.databaseId}'${causeStr}`;
 	}
 	if (error instanceof IndexEntriesUpsertError) {
@@ -173,9 +219,11 @@ function errorToMessage(
 export async function processBuildIndexJob(
 	job: IndexBuildJob,
 	env: Env,
-	correlationId?: string
+	correlationId?: string,
 ): Promise<void> {
-	const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(job.database_id));
+	const topologyStub = env.TOPOLOGY.get(
+		env.TOPOLOGY.idFromName(job.database_id),
+	) as DurableObjectStub<Topology>;
 
 	const effect = processBuildIndexJobEffect(job, env, correlationId).pipe(
 		Effect.catchAll((error) =>
@@ -184,16 +232,21 @@ export async function processBuildIndexJob(
 
 				// Update index status to 'failed'
 				yield* Effect.tryPromise({
-					try: () => topologyStub.updateIndexStatus(job.index_name, 'failed', errorMessage),
-					catch: () => new Error('Failed to update index status to failed'),
+					try: () =>
+						topologyStub.updateIndexStatus(
+							job.index_name,
+							"failed",
+							errorMessage,
+						),
+					catch: () => new Error("Failed to update index status to failed"),
 				});
 
 				// Error will be logged automatically with context annotations
 				return yield* Effect.fail(new Error(errorMessage));
-			})
+			}),
 		),
 		// Add source annotation to all logs and errors
-		Effect.annotateLogs({ source: 'QueueConsumer', jobType: 'build_index' })
+		Effect.annotateLogs({ source: "QueueConsumer", jobType: "build_index" }),
 	);
 
 	return Effect.runPromise(effect);

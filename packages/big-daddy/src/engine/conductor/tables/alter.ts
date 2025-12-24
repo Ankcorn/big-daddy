@@ -1,5 +1,5 @@
-import { logger } from '../../../logger';
-import type { QueryResult, QueryHandlerContext } from '../types';
+import { logger } from "../../../logger";
+import type { QueryHandlerContext, QueryResult } from "../types";
 
 /**
  * Handle ALTER TABLE statement execution
@@ -16,7 +16,7 @@ import type { QueryResult, QueryHandlerContext } from '../types';
 export async function handleAlterTable(
 	tableName: string,
 	alterationType: string,
-	alterationValue: any,
+	alterationValue: string | number,
 	context: QueryHandlerContext,
 ): Promise<QueryResult> {
 	const { databaseId, topology } = context;
@@ -27,18 +27,28 @@ export async function handleAlterTable(
 		const topologyData = await topologyStub.getTopology();
 
 		// Find table
-		const tableMetadata = topologyData.tables.find((t) => t.table_name === tableName);
+		const tableMetadata = topologyData.tables.find(
+			(t) => t.table_name === tableName,
+		);
 		if (!tableMetadata) {
 			throw new Error(`Table '${tableName}' not found`);
 		}
 
-		let updateData: any = { tables: { update: [] } };
+		let updateData: {
+			tables: {
+				update?: typeof topologyData.tables;
+				add?: typeof topologyData.tables;
+				remove?: string[];
+			};
+		} = { tables: { update: [] } };
 
-		if (alterationType === 'RENAME') {
+		if (alterationType === "RENAME") {
 			const newTableName = alterationValue as string;
 
 			// Check if new name already exists
-			const existingTable = topologyData.tables.find((t) => t.table_name === newTableName);
+			const existingTable = topologyData.tables.find(
+				(t) => t.table_name === newTableName,
+			);
 			if (existingTable) {
 				throw new Error(`Table '${newTableName}' already exists`);
 			}
@@ -61,12 +71,18 @@ export async function handleAlterTable(
 				},
 			};
 
-			logger.info`ALTER TABLE RENAME initiated ${{oldName: tableName}} ${{newName: newTableName}}`;
-		} else if (alterationType === 'MODIFY_BLOCK_SIZE') {
+			logger.info`ALTER TABLE RENAME initiated ${{ oldName: tableName }} ${{ newName: newTableName }}`;
+		} else if (alterationType === "MODIFY_BLOCK_SIZE") {
 			const newBlockSize = alterationValue as number;
 
-			if (!Number.isInteger(newBlockSize) || newBlockSize < 1 || newBlockSize > 10000) {
-				throw new Error(`Invalid block size: ${newBlockSize}. Must be between 1 and 10000`);
+			if (
+				!Number.isInteger(newBlockSize) ||
+				newBlockSize < 1 ||
+				newBlockSize > 10000
+			) {
+				throw new Error(
+					`Invalid block size: ${newBlockSize}. Must be between 1 and 10000`,
+				);
 			}
 
 			const updatedMetadata = {
@@ -81,7 +97,7 @@ export async function handleAlterTable(
 				},
 			};
 
-			logger.info`ALTER TABLE MODIFY block_size ${{table: tableName}} ${{oldBlockSize: tableMetadata.block_size}} ${{newBlockSize}}`;
+			logger.info`ALTER TABLE MODIFY block_size ${{ table: tableName }} ${{ oldBlockSize: tableMetadata.block_size }} ${{ newBlockSize }}`;
 		} else {
 			throw new Error(`Unsupported ALTER operation: ${alterationType}`);
 		}
@@ -89,7 +105,7 @@ export async function handleAlterTable(
 		// Update topology
 		await topologyStub.updateTopology(updateData);
 
-		logger.info`ALTER TABLE completed successfully ${{table: tableName}} ${{operation: alterationType}}`;
+		logger.info`ALTER TABLE completed successfully ${{ table: tableName }} ${{ operation: alterationType }}`;
 
 		return {
 			rows: [],
@@ -114,8 +130,14 @@ export async function handleReshardTable(
 	const { databaseId, topology, indexQueue } = context;
 
 	try {
-		if (!Number.isInteger(newShardCount) || newShardCount < 1 || newShardCount > 256) {
-			throw new Error(`Invalid shard count: ${newShardCount}. Must be between 1 and 256`);
+		if (
+			!Number.isInteger(newShardCount) ||
+			newShardCount < 1 ||
+			newShardCount > 256
+		) {
+			throw new Error(
+				`Invalid shard count: ${newShardCount}. Must be between 1 and 256`,
+			);
 		}
 
 		const topologyId = topology.idFromName(databaseId);
@@ -123,14 +145,18 @@ export async function handleReshardTable(
 		const topologyData = await topologyStub.getTopology();
 
 		// Find table
-		const tableMetadata = topologyData.tables.find((t) => t.table_name === tableName);
+		const tableMetadata = topologyData.tables.find(
+			(t) => t.table_name === tableName,
+		);
 		if (!tableMetadata) {
 			throw new Error(`Table '${tableName}' not found`);
 		}
 
 		// Check if already resharding
 		const activeResharding = topologyData.resharding_states.find(
-			(s) => s.table_name === tableName && (s.status === 'pending_shards' || s.status === 'copying')
+			(s) =>
+				s.table_name === tableName &&
+				(s.status === "pending_shards" || s.status === "copying"),
 		);
 
 		if (activeResharding) {
@@ -139,7 +165,7 @@ export async function handleReshardTable(
 
 		// Check if shard count is the same
 		if (newShardCount === tableMetadata.num_shards) {
-			logger.warn`Requested shard count is same as current ${{table: tableName}} ${{currentShards: tableMetadata.num_shards}}`;
+			logger.warn`Requested shard count is same as current ${{ table: tableName }} ${{ currentShards: tableMetadata.num_shards }}`;
 			return {
 				rows: [],
 				rowsAffected: 0,
@@ -148,20 +174,24 @@ export async function handleReshardTable(
 
 		// Phase 1: Create pending shards and resharding state
 		const changeLogId = crypto.randomUUID();
-		const newShards = await topologyStub.createPendingShards(tableName, newShardCount, changeLogId);
+		const newShards = await topologyStub.createPendingShards(
+			tableName,
+			newShardCount,
+			changeLogId,
+		);
 
-		logger.info`Pending shards created for resharding ${{table: tableName}} ${{oldShardCount: tableMetadata.num_shards}} ${{newShardCount: newShards.length}} ${{changeLogId}}`;
+		logger.info`Pending shards created for resharding ${{ table: tableName }} ${{ oldShardCount: tableMetadata.num_shards }} ${{ newShardCount: newShards.length }} ${{ changeLogId }}`;
 
 		// Phase 2: Enqueue resharding jobs for each active source shard
 		if (indexQueue) {
 			const sourceShardIds = topologyData.table_shards
-				.filter((s) => s.table_name === tableName && s.status === 'active')
+				.filter((s) => s.table_name === tableName && s.status === "active")
 				.sort((a, b) => a.shard_id - b.shard_id)
 				.map((s) => s.shard_id);
 
 			for (const sourceShardId of sourceShardIds) {
 				await indexQueue.send({
-					type: 'reshard_table',
+					type: "reshard_table",
 					database_id: databaseId,
 					table_name: tableName,
 					source_shard_id: sourceShardId,
@@ -175,13 +205,13 @@ export async function handleReshardTable(
 			}
 		}
 
-		logger.info`Resharding jobs enqueued ${{table: tableName}} ${{changeLogId}}`;
+		logger.info`Resharding jobs enqueued ${{ table: tableName }} ${{ changeLogId }}`;
 
 		return {
 			rows: [
 				{
 					change_log_id: changeLogId,
-					status: 'queued',
+					status: "queued",
 					message: `Resharding ${tableName} from ${tableMetadata.num_shards} shards to ${newShardCount} shards`,
 					table_name: tableName,
 					source_shard_count: tableMetadata.num_shards,

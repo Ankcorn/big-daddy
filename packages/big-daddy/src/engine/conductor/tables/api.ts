@@ -1,8 +1,16 @@
-import type { QueryResult, QueryHandlerContext } from '../types';
-import { handleShowTables, handleDescribeTable, handleTableStats } from './describe';
-import { handleDropTable as dropTableHandler } from './create-drop';
-import { handleDropIndex, handleShowIndexes } from '../indexes';
-import { handleAlterTable, handleReshardTable as reshardTableHandler } from './alter';
+import type { DropTableStatement, Identifier } from "@databases/sqlite-ast";
+import { handleDropIndex, handleShowIndexes } from "../indexes";
+import type { QueryHandlerContext, QueryResult } from "../types";
+import {
+	handleAlterTable,
+	handleReshardTable as reshardTableHandler,
+} from "./alter";
+import { handleDropTable as dropTableHandler } from "./create-drop";
+import {
+	handleDescribeTable,
+	handleShowTables,
+	handleTableStats,
+} from "./describe";
 
 /**
  * Comprehensive Table Operations API
@@ -81,13 +89,16 @@ export class TableOperationsAPI {
 	 * // or
 	 * await tableOps.drop('users', true); // DROP TABLE IF EXISTS
 	 */
-	async drop(tableName: string, ifExists: boolean = false): Promise<QueryResult> {
-		const statement = {
-			type: 'DropTableStatement' as const,
-			table: { name: tableName },
+	async drop(
+		tableName: string,
+		ifExists: boolean = false,
+	): Promise<QueryResult> {
+		const statement: DropTableStatement = {
+			type: "DropTableStatement",
+			table: { type: "Identifier", name: tableName } as Identifier,
 			ifExists,
 		};
-		return dropTableHandler(statement as any, this.context);
+		return dropTableHandler(statement, this.context);
 	}
 
 	/**
@@ -99,7 +110,7 @@ export class TableOperationsAPI {
 	 * await tableOps.rename('users', 'customers');
 	 */
 	async rename(oldName: string, newName: string): Promise<QueryResult> {
-		return handleAlterTable(oldName, 'RENAME', newName, this.context);
+		return handleAlterTable(oldName, "RENAME", newName, this.context);
 	}
 
 	/**
@@ -112,8 +123,16 @@ export class TableOperationsAPI {
 	 * @example
 	 * await tableOps.setBlockSize('users', 1000);
 	 */
-	async setBlockSize(tableName: string, blockSize: number): Promise<QueryResult> {
-		return handleAlterTable(tableName, 'MODIFY_BLOCK_SIZE', blockSize, this.context);
+	async setBlockSize(
+		tableName: string,
+		blockSize: number,
+	): Promise<QueryResult> {
+		return handleAlterTable(
+			tableName,
+			"MODIFY_BLOCK_SIZE",
+			blockSize,
+			this.context,
+		);
 	}
 
 	/**
@@ -131,7 +150,10 @@ export class TableOperationsAPI {
 	 * const result = await tableOps.reshard('users', 8);
 	 * console.log(`Resharding queued with ID: ${result.rows[0].change_log_id}`);
 	 */
-	async reshard(tableName: string, newShardCount: number): Promise<QueryResult> {
+	async reshard(
+		tableName: string,
+		newShardCount: number,
+	): Promise<QueryResult> {
 		return reshardTableHandler(tableName, newShardCount, this.context);
 	}
 
@@ -161,7 +183,11 @@ export class TableOperationsAPI {
 	 * // or
 	 * await tableOps.dropIndex('idx_email', 'users', true); // IF EXISTS
 	 */
-	async dropIndex(indexName: string, tableName?: string, ifExists: boolean = false): Promise<QueryResult> {
+	async dropIndex(
+		indexName: string,
+		tableName?: string,
+		ifExists: boolean = false,
+	): Promise<QueryResult> {
 		return handleDropIndex(indexName, tableName, this.context, ifExists);
 	}
 }
@@ -175,6 +201,8 @@ export class TableOperationsAPI {
  * const tableOps = createTableOperationsAPI(context);
  * const tables = await tableOps.listTables();
  */
-export function createTableOperationsAPI(context: QueryHandlerContext): TableOperationsAPI {
+export function createTableOperationsAPI(
+	context: QueryHandlerContext,
+): TableOperationsAPI {
 	return new TableOperationsAPI(context);
 }

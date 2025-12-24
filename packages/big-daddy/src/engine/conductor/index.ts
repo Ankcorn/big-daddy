@@ -1,28 +1,19 @@
-import { parse } from '@databases/sqlite-ast';
+import { parse } from "@databases/sqlite-ast";
+import { logger } from "../../logger";
+import type { Storage } from "../storage";
+import type { Topology } from "../topology/index";
+import { buildQuery } from "../utils/ast-utils";
+import { TopologyCache } from "../utils/topology-cache";
+import { handleDelete, handleInsert, handleSelect, handleUpdate } from "./crud";
+import { handleCreateIndex } from "./indexes";
+import { handlePragma } from "./pragmas";
+import { handleCreateTable, handleDropTable } from "./tables";
 import type {
-	Statement,
-	SelectStatement,
-	InsertStatement,
-	UpdateStatement,
-	DeleteStatement,
-	CreateTableStatement,
-	CreateIndexStatement,
-	DropTableStatement,
-	PragmaStatement,
-} from '@databases/sqlite-ast';
-import { logger } from '../../logger';
-import { TopologyCache } from '../utils/topology-cache';
-import { buildQuery, getQueryType, extractTableName } from '../utils/ast-utils';
-import type { Topology } from '../topology/index';
-import type { Storage } from '../storage';
-import type { QueryResult, ConductorAPI, QueryHandlerContext } from './types';
-import { handleSelect, handleInsert, handleUpdate, handleDelete } from './crud';
-import { handleCreateTable, handleDropTable } from './tables';
-import { handleCreateIndex } from './indexes';
-import { handleDropIndex, handleShowIndexes } from './indexes';
-import { handleDescribeTable, handleShowTables, handleTableStats } from './tables';
-import { handleAlterTable, handleReshardTable } from './tables';
-import { handlePragma } from './pragmas';
+	ConductorAPI,
+	QueryHandlerContext,
+	QueryResult,
+	SqlParam,
+} from "./types";
 
 /**
  * Conductor - Routes SQL queries to the appropriate storage shards
@@ -68,19 +59,22 @@ export class ConductorClient {
 	 * const result = await conductor.sql<{ id: number; name: string }>`SELECT id, name FROM users WHERE id = ${userId}`;
 	 * await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)`;
 	 */
-	sql = async <T = Record<string, any>>(strings: TemplateStringsArray, ...values: any[]): Promise<QueryResult<T>> => {
+	sql = async <T = Record<string, unknown>>(
+		strings: TemplateStringsArray,
+		...values: SqlParam[]
+	): Promise<QueryResult<T>> => {
 		const startTime = Date.now();
 		const cid = this.correlationId;
-		const source = 'Conductor';
-		const component = 'Conductor';
-		const operation = 'sql';
+		const source = "Conductor";
+		const component = "Conductor";
+		const operation = "sql";
 		const databaseId = this.databaseId;
 
 		// STEP 1: Parse - Build and parse the SQL query
 		const { query, params } = buildQuery(strings, values);
 		const statement = parse(query);
 
-		logger.info`Executing query ${{source}} ${{component}} ${{operation}} ${{correlationId: cid}} ${{requestId: cid}} ${{databaseId}}`;
+		logger.info`Executing query ${{ source }} ${{ component }} ${{ operation }} ${{ correlationId: cid }} ${{ requestId: cid }} ${{ databaseId }}`;
 
 		// Create handler context
 		const context: QueryHandlerContext = {
@@ -96,22 +90,50 @@ export class ConductorClient {
 		// STEP 2: Route to appropriate handler based on query type
 		let result: QueryResult<T>;
 
-		if (statement.type === 'SelectStatement') {
-			result = (await handleSelect(statement, query, params, context)) as QueryResult<T>;
-		} else if (statement.type === 'InsertStatement') {
-			result = (await handleInsert(statement, query, params, context)) as QueryResult<T>;
-		} else if (statement.type === 'UpdateStatement') {
-			result = (await handleUpdate(statement, query, params, context)) as QueryResult<T>;
-		} else if (statement.type === 'DeleteStatement') {
-			result = (await handleDelete(statement, query, params, context)) as QueryResult<T>;
-		} else if (statement.type === 'CreateTableStatement') {
-			result = (await handleCreateTable(statement, query, context)) as QueryResult<T>;
-		} else if (statement.type === 'DropTableStatement') {
+		if (statement.type === "SelectStatement") {
+			result = (await handleSelect(
+				statement,
+				query,
+				params,
+				context,
+			)) as QueryResult<T>;
+		} else if (statement.type === "InsertStatement") {
+			result = (await handleInsert(
+				statement,
+				query,
+				params,
+				context,
+			)) as QueryResult<T>;
+		} else if (statement.type === "UpdateStatement") {
+			result = (await handleUpdate(
+				statement,
+				query,
+				params,
+				context,
+			)) as QueryResult<T>;
+		} else if (statement.type === "DeleteStatement") {
+			result = (await handleDelete(
+				statement,
+				query,
+				params,
+				context,
+			)) as QueryResult<T>;
+		} else if (statement.type === "CreateTableStatement") {
+			result = (await handleCreateTable(
+				statement,
+				query,
+				context,
+			)) as QueryResult<T>;
+		} else if (statement.type === "DropTableStatement") {
 			result = (await handleDropTable(statement, context)) as QueryResult<T>;
-		} else if (statement.type === 'CreateIndexStatement') {
+		} else if (statement.type === "CreateIndexStatement") {
 			result = (await handleCreateIndex(statement, context)) as QueryResult<T>;
-		} else if (statement.type === 'PragmaStatement') {
-			result = (await handlePragma(statement, query, context)) as QueryResult<T>;
+		} else if (statement.type === "PragmaStatement") {
+			result = (await handlePragma(
+				statement,
+				query,
+				context,
+			)) as QueryResult<T>;
 		} else {
 			throw new Error(`Unsupported statement type: ${statement.type}`);
 		}
@@ -120,7 +142,7 @@ export class ConductorClient {
 		const rowCount = result.rows.length;
 		const rowsAffected = result.rowsAffected;
 
-		logger.info`Query completed ${{source}} ${{component}} ${{databaseId}} ${{duration}} ${{rowCount}} ${{rowsAffected}}`;
+		logger.info`Query completed ${{ source }} ${{ component }} ${{ databaseId }} ${{ duration }} ${{ rowCount }} ${{ rowsAffected }}`;
 
 		return result;
 	};
@@ -140,15 +162,29 @@ export class ConductorClient {
  * const stats = conductor.getCacheStats();
  * conductor.clearCache();
  */
-export function createConductor(databaseId: string, cid: string, env: Env): ConductorAPI {
-	const client = new ConductorClient(databaseId, cid, env.STORAGE, env.TOPOLOGY, env.INDEX_QUEUE, env);
+export function createConductor(
+	databaseId: string,
+	cid: string,
+	env: Env,
+): ConductorAPI {
+	const client = new ConductorClient(
+		databaseId,
+		cid,
+		env.STORAGE as unknown as DurableObjectNamespace<Storage>,
+		env.TOPOLOGY as unknown as DurableObjectNamespace<Topology>,
+		env.INDEX_QUEUE,
+		env,
+	);
 
 	return {
-		sql: <T = Record<string, any>>(strings: TemplateStringsArray, ...values: any[]) => client.sql<T>(strings, ...values),
+		sql: <T = Record<string, unknown>>(
+			strings: TemplateStringsArray,
+			...values: SqlParam[]
+		) => client.sql<T>(strings, ...values),
 		getCacheStats: () => client.getCacheStats(),
 		clearCache: () => client.clearCache(),
 	};
 }
 
 // Re-export types for external use
-export type { QueryResult, ConductorAPI } from './types';
+export type { ConductorAPI, QueryResult, SqlParam } from "./types";

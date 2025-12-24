@@ -1,12 +1,24 @@
-import { logger } from '../../../logger';
-import type { QueryResult, QueryHandlerContext } from '../types';
+import { logger } from "../../../logger";
+import type { QueryHandlerContext, QueryResult } from "../types";
+
+/** SQLite PRAGMA table_info result row */
+interface TableInfoRow {
+	cid: number;
+	name: string;
+	type: string;
+	notnull: number;
+	dflt_value: string | null;
+	pk: number;
+}
 
 /**
  * Handle SHOW TABLES query
  *
  * Returns a list of all tables in the database
  */
-export async function handleShowTables(context: QueryHandlerContext): Promise<QueryResult> {
+export async function handleShowTables(
+	context: QueryHandlerContext,
+): Promise<QueryResult> {
 	const { databaseId, topology } = context;
 
 	try {
@@ -14,7 +26,7 @@ export async function handleShowTables(context: QueryHandlerContext): Promise<Qu
 		const topologyStub = topology.get(topologyId);
 		const topologyData = await topologyStub.getTopology();
 
-		logger.info`SHOW TABLES executed ${{tableCount: topologyData.tables.length}}`;
+		logger.info`SHOW TABLES executed ${{ tableCount: topologyData.tables.length }}`;
 
 		// Return table names
 		const rows = topologyData.tables.map((table) => ({
@@ -56,41 +68,47 @@ export async function handleDescribeTable(
 		const topologyData = await topologyStub.getTopology();
 
 		// Step 1: Find table metadata
-		const tableMetadata = topologyData.tables.find((t) => t.table_name === tableName);
+		const tableMetadata = topologyData.tables.find(
+			(t) => t.table_name === tableName,
+		);
 		if (!tableMetadata) {
 			throw new Error(`Table '${tableName}' not found`);
 		}
 
 		// Step 2: Get table shards
-		const tableShards = topologyData.table_shards.filter((s) => s.table_name === tableName);
+		const tableShards = topologyData.table_shards.filter(
+			(s) => s.table_name === tableName,
+		);
 
 		// Step 3: Get virtual indexes for this table
-		const tableIndexes = topologyData.virtual_indexes.filter((i) => i.table_name === tableName);
+		const tableIndexes = topologyData.virtual_indexes.filter(
+			(i) => i.table_name === tableName,
+		);
 
 		// Step 4: Get schema from first shard (all shards have same schema)
-		let schema: any[] = [];
+		let schema: TableInfoRow[] = [];
 		if (tableShards.length > 0) {
 			const firstShard = tableShards[0];
-			const storageId = storage.idFromName(firstShard.node_id);
+			const storageId = storage.idFromName(firstShard!.node_id);
 			const storageStub = storage.get(storageId);
 
 			try {
-				const result = (await storageStub.executeQuery({
+				const queryResult: unknown = await storageStub.executeQuery({
 					query: `PRAGMA table_info("${tableName}")`,
 					params: [],
-				})) as any;
-				schema = result.rows as any[];
+				});
+				schema = (queryResult as { rows: TableInfoRow[] }).rows;
 			} catch (error) {
-				logger.warn`Failed to fetch schema from storage ${{table: tableName}} ${{error: (error as Error).message}}`;
+				logger.warn`Failed to fetch schema from storage ${{ table: tableName }} ${{ error: (error as Error).message }}`;
 			}
 		}
 
-		logger.info`DESCRIBE TABLE executed ${{table: tableName}} ${{shardCount: tableShards.length}} ${{indexCount: tableIndexes.length}} ${{columnCount: schema.length}}`;
+		logger.info`DESCRIBE TABLE executed ${{ table: tableName }} ${{ shardCount: tableShards.length }} ${{ indexCount: tableIndexes.length }} ${{ columnCount: schema.length }}`;
 
 		// Build response
 		const rows = [
 			{
-				section: 'TABLE_INFO',
+				section: "TABLE_INFO",
 				table_name: tableName,
 				primary_key: tableMetadata.primary_key,
 				shard_key: tableMetadata.shard_key,
@@ -101,7 +119,7 @@ export async function handleDescribeTable(
 				updated_at: new Date(tableMetadata.updated_at).toISOString(),
 			},
 			{
-				section: 'SHARDS',
+				section: "SHARDS",
 				total_shards: tableShards.length,
 				shards: tableShards.map((s) => ({
 					shard_id: s.shard_id,
@@ -110,7 +128,7 @@ export async function handleDescribeTable(
 				})),
 			},
 			{
-				section: 'INDEXES',
+				section: "INDEXES",
 				total_indexes: tableIndexes.length,
 				indexes: tableIndexes.map((idx) => ({
 					index_name: idx.index_name,
@@ -120,8 +138,8 @@ export async function handleDescribeTable(
 				})),
 			},
 			{
-				section: 'COLUMNS',
-				columns: schema.map((col: any) => ({
+				section: "COLUMNS",
+				columns: schema.map((col) => ({
 					name: col.name,
 					type: col.type,
 					notnull: col.notnull === 1,
@@ -160,13 +178,17 @@ export async function handleTableStats(
 		const topologyData = await topologyStub.getTopology();
 
 		// Find table
-		const tableMetadata = topologyData.tables.find((t) => t.table_name === tableName);
+		const tableMetadata = topologyData.tables.find(
+			(t) => t.table_name === tableName,
+		);
 		if (!tableMetadata) {
 			throw new Error(`Table '${tableName}' not found`);
 		}
 
 		// Get shards
-		const tableShards = topologyData.table_shards.filter((s) => s.table_name === tableName && s.status === 'active');
+		const tableShards = topologyData.table_shards.filter(
+			(s) => s.table_name === tableName && s.status === "active",
+		);
 
 		// Fetch row count from each shard
 		const shardStats = await Promise.all(
@@ -175,12 +197,13 @@ export async function handleTableStats(
 				const storageStub = storage.get(storageId);
 
 				try {
-					const result = (await storageStub.executeQuery({
+					const queryResult: unknown = await storageStub.executeQuery({
 						query: `SELECT COUNT(*) as row_count FROM "${tableName}" WHERE _virtualShard = ?`,
 						params: [shard.shard_id],
-					})) as any;
-
-					const rowCount = (result.rows[0] as any)?.row_count || 0;
+					});
+					const result = queryResult as { rows: { row_count: number }[] };
+					const firstRow = result.rows[0];
+					const rowCount = firstRow?.row_count || 0;
 					return {
 						shard_id: shard.shard_id,
 						node_id: shard.node_id,
@@ -188,21 +211,24 @@ export async function handleTableStats(
 						status: shard.status,
 					};
 				} catch (error) {
-					logger.warn`Failed to get shard stats ${{table: tableName}} ${{shard: shard.shard_id}} ${{error: (error as Error).message}}`;
+					logger.warn`Failed to get shard stats ${{ table: tableName }} ${{ shard: shard.shard_id }} ${{ error: (error as Error).message }}`;
 					return {
 						shard_id: shard.shard_id,
 						node_id: shard.node_id,
 						row_count: 0,
-						status: 'error',
+						status: "error",
 						error: (error as Error).message,
 					};
 				}
 			}),
 		);
 
-		const totalRows = shardStats.reduce((sum, s) => sum + (s.row_count || 0), 0);
+		const totalRows = shardStats.reduce(
+			(sum, s) => sum + (s.row_count || 0),
+			0,
+		);
 
-		logger.info`TABLE STATS executed ${{table: tableName}} ${{totalRows}} ${{shardCount: tableShards.length}}`;
+		logger.info`TABLE STATS executed ${{ table: tableName }} ${{ totalRows }} ${{ shardCount: tableShards.length }}`;
 
 		return {
 			rows: [
@@ -210,7 +236,10 @@ export async function handleTableStats(
 					table_name: tableName,
 					total_rows: totalRows,
 					total_shards: tableShards.length,
-					avg_rows_per_shard: tableShards.length > 0 ? Math.round(totalRows / tableShards.length) : 0,
+					avg_rows_per_shard:
+						tableShards.length > 0
+							? Math.round(totalRows / tableShards.length)
+							: 0,
 					shard_stats: shardStats,
 				},
 			],

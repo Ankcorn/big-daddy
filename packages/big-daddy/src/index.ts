@@ -11,25 +11,25 @@
  * Learn more at https://developers.cloudflare.com/durable-objects
  */
 
-import { WorkerEntrypoint } from 'cloudflare:workers';
-import { Hono } from 'hono';
-import { logger } from './logger';
-import { createConductor } from './engine/conductor';
-import { queueHandler } from './queue-consumer';
-import { dashboard } from './dashboard.tsx';
-import type { QueryResult } from './engine/conductor';
-import type { MessageBatch, IndexJob } from './engine/queue/types';
-import { Topology } from './engine/topology/index';
-import { Storage } from './engine/storage';
+import { WorkerEntrypoint } from "cloudflare:workers";
+import { Hono } from "hono";
+import { dashboard } from "./dashboard";
+import type { QueryResult } from "./engine/conductor";
+import { createConductor } from "./engine/conductor";
+import type { SqlParam } from "./engine/conductor/types";
+import type { IndexJob, MessageBatch } from "./engine/queue/types";
+import { Storage } from "./engine/storage";
+import { Topology } from "./engine/topology/index";
+import { logger } from "./logger";
+import { queueHandler } from "./queue-consumer";
 // Export Durable Objects
 export { Storage, Topology };
 
-// Export conductor creation functions
-export { createConductor } from './engine/conductor';
-
 // Export types
-export type { QueryResult, ConductorAPI } from './engine/conductor';
-export type { CacheStats } from './engine/utils/topology-cache';
+export type { ConductorAPI, QueryResult } from "./engine/conductor";
+// Export conductor creation functions
+export { createConductor } from "./engine/conductor";
+export type { CacheStats } from "./engine/utils/topology-cache";
 
 /**
  * Configuration options for createConnection
@@ -44,9 +44,10 @@ export interface ConnectionConfig {
 /**
  * SQL tagged template literal function
  */
-export interface SqlFunction {
-	(strings: TemplateStringsArray, ...values: any[]): Promise<QueryResult>;
-}
+export type SqlFunction = (
+	strings: TemplateStringsArray,
+	...values: SqlParam[]
+) => Promise<QueryResult>;
 
 /**
  * Environment interface with required Big Daddy bindings
@@ -78,17 +79,21 @@ export interface BigDaddyEnv {
  * const result = await sql`SELECT * FROM users WHERE id = ${123}`;
  * ```
  */
-export async function createConnection(databaseId: string, config: ConnectionConfig, env: BigDaddyEnv): Promise<SqlFunction> {
+export async function createConnection(
+	databaseId: string,
+	config: ConnectionConfig,
+	env: BigDaddyEnv,
+): Promise<SqlFunction> {
 	const cid = config.correlationId || crypto.randomUUID();
-	const source = 'createConnection';
-	const component = 'createConnection';
+	const source = "createConnection";
+	const component = "createConnection";
 	const nodes = config.nodes;
 
-	logger.debug`Creating connection ${{source}} ${{component}} ${{correlationId: cid}} ${{requestId: cid}} ${{databaseId}} ${{nodes}}`;
+	logger.debug`Creating connection ${{ source }} ${{ component }} ${{ correlationId: cid }} ${{ requestId: cid }} ${{ databaseId }} ${{ nodes }}`;
 
-		// Get the Topology DO stub
-		const topologyId = env.TOPOLOGY.idFromName(databaseId);
-		const topologyStub = env.TOPOLOGY.get(topologyId);
+	// Get the Topology DO stub
+	const topologyId = env.TOPOLOGY.idFromName(databaseId);
+	const topologyStub = env.TOPOLOGY.get(topologyId);
 
 	// Try to check if topology exists by calling getTopology
 	// If it throws an error about topology not being created, we'll create it
@@ -96,11 +101,14 @@ export async function createConnection(databaseId: string, config: ConnectionCon
 		const topologyData = await topologyStub.getTopology();
 		const existingNodes = topologyData.storage_nodes.length;
 
-		logger.debug`Topology already exists ${{source}} ${{component}} ${{databaseId}} ${{nodes: existingNodes}}`;
+		logger.debug`Topology already exists ${{ source }} ${{ component }} ${{ databaseId }} ${{ nodes: existingNodes }}`;
 	} catch (error) {
 		// Check if the error is about topology not being created
-		if (error instanceof Error && error.message.includes('Topology not created')) {
-			logger.info`Topology does not exist, creating ${{source}} ${{component}} ${{databaseId}} ${{nodes}}`;
+		if (
+			error instanceof Error &&
+			error.message.includes("Topology not created")
+		) {
+			logger.info`Topology does not exist, creating ${{ source }} ${{ component }} ${{ databaseId }} ${{ nodes }}`;
 
 			// Create topology with the specified number of nodes
 			const result = await topologyStub.create(config.nodes);
@@ -109,17 +117,20 @@ export async function createConnection(databaseId: string, config: ConnectionCon
 				throw new Error(`Failed to create topology: ${result.error}`);
 			}
 
-			logger.info`Topology created successfully ${{source}} ${{component}} ${{databaseId}} ${{nodes}}`;
+			logger.info`Topology created successfully ${{ source }} ${{ component }} ${{ databaseId }} ${{ nodes }}`;
 		} else {
 			// Re-throw if it's a different error
 			throw error;
 		}
 	}
 
-	const client = createConductor(databaseId, cid, env);
+	const client = createConductor(databaseId, cid, env as unknown as Env);
 
 	// Return the sql function bound with the conductor client
-	const sql: SqlFunction = async (strings: TemplateStringsArray, ...values: any[]) => {
+	const sql: SqlFunction = async (
+		strings: TemplateStringsArray,
+		...values: SqlParam[]
+	) => {
 		return client.sql(strings, ...values);
 	};
 
@@ -159,8 +170,15 @@ export default class BigDaddy extends WorkerEntrypoint<Env> {
 	 * @param config - Configuration options (nodes, correlationId)
 	 * @returns SQL tagged template literal function
 	 */
-	async createConnection(databaseId: string, config: ConnectionConfig): Promise<SqlFunction> {
-		return createConnection(databaseId, config, this.env);
+	async createConnection(
+		databaseId: string,
+		config: ConnectionConfig,
+	): Promise<SqlFunction> {
+		return createConnection(
+			databaseId,
+			config,
+			this.env as unknown as BigDaddyEnv,
+		);
 	}
 
 	/**
@@ -176,39 +194,45 @@ export default class BigDaddy extends WorkerEntrypoint<Env> {
 		const app = new Hono<{ Bindings: Env }>();
 
 		// Generate or extract correlation ID from request headers
-		const correlationId = request.headers.get('x-correlation-id') || request.headers.get('cf-ray') || crypto.randomUUID();
+		const correlationId =
+			request.headers.get("x-correlation-id") ||
+			request.headers.get("cf-ray") ||
+			crypto.randomUUID();
 
 		// Error handling middleware
 		app.onError((err, c) => {
-			console.error('Hono error:', err);
+			console.error("Hono error:", err);
 			return c.json(
 				{
 					error: err instanceof Error ? err.message : String(err),
 					stack: err instanceof Error ? err.stack : undefined,
 				},
-				500
+				500,
 			);
 		});
 
 		// Mount the dashboard (which includes its own logger middleware)
-		app.route('/', dashboard);
+		app.route("/", dashboard);
 
 		// Handle SQL query endpoint
-		app.post('/sql', async (c) => {
+		app.post("/sql", async (c) => {
 			try {
 				const body = await c.req.json<{
 					database?: string;
 					query: string;
-					params?: any[];
+					params?: SqlParam[];
 				}>();
 
-				const { database = 'default', query, params = [] } = body;
+				const { database = "default", query, params = [] } = body;
 
 				// Create connection and execute query
-				const sql = await this.createConnection(database, { nodes: 8, correlationId });
+				const sql = await this.createConnection(database, {
+					nodes: 8,
+					correlationId,
+				});
 
 				// Parse query to build template strings
-				const strings = [query] as any as TemplateStringsArray;
+				const strings = [query] as unknown as TemplateStringsArray;
 				const result = await sql(strings, ...params);
 
 				return c.json(result);
@@ -217,24 +241,24 @@ export default class BigDaddy extends WorkerEntrypoint<Env> {
 					{
 						error: error instanceof Error ? error.message : String(error),
 					},
-					400
+					400,
 				);
 			}
 		});
 
 		// Handle health check
-		app.get('/health', (c) => {
-			return c.json({ status: 'ok' });
+		app.get("/health", (c) => {
+			return c.json({ status: "ok" });
 		});
 
 		// Default response
-		app.get('/', (c) => {
+		app.get("/", (c) => {
 			return c.json({
-				message: 'Big Daddy - Distributed SQL on Cloudflare',
+				message: "Big Daddy - Distributed SQL on Cloudflare",
 				endpoints: {
-					'/dash/:databaseId': 'GET - View database topology dashboard',
-					'/sql': 'POST - Execute SQL query',
-					'/health': 'GET - Health check',
+					"/dash/:databaseId": "GET - View database topology dashboard",
+					"/sql": "POST - Execute SQL query",
+					"/health": "GET - Health check",
 				},
 			});
 		});
@@ -247,21 +271,25 @@ export default class BigDaddy extends WorkerEntrypoint<Env> {
 	 */
 	override async queue(batch: MessageBatch<unknown>): Promise<void> {
 		const correlationId = crypto.randomUUID();
-		const source = 'BigDaddy';
-		const component = 'BigDaddy';
-		const operation = 'queue';
+		const source = "BigDaddy";
+		const component = "BigDaddy";
+		const operation = "queue";
 		const batchSize = batch.messages.length;
 
-		logger.info`Processing queue batch ${{source}} ${{component}} ${{operation}} ${{correlationId}} ${{requestId: correlationId}} ${{batchSize}}`;
+		logger.info`Processing queue batch ${{ source }} ${{ component }} ${{ operation }} ${{ correlationId }} ${{ requestId: correlationId }} ${{ batchSize }}`;
 
 		try {
-			await queueHandler(batch as MessageBatch<IndexJob>, this.env, correlationId);
-			const status = 'success';
-			logger.info`Queue batch processed successfully ${{source}} ${{component}} ${{batchSize}} ${{status}}`;
+			await queueHandler(
+				batch as MessageBatch<IndexJob>,
+				this.env,
+				correlationId,
+			);
+			const status = "success";
+			logger.info`Queue batch processed successfully ${{ source }} ${{ component }} ${{ batchSize }} ${{ status }}`;
 		} catch (error) {
-			const status = 'failure';
+			const status = "failure";
 			const errorMsg = error instanceof Error ? error.message : String(error);
-			logger.error`Queue batch processing failed ${{source}} ${{component}} ${{batchSize}} ${{status}} ${{error: errorMsg}}`;
+			logger.error`Queue batch processing failed ${{ source }} ${{ component }} ${{ batchSize }} ${{ status }} ${{ error: errorMsg }}`;
 			throw error;
 		}
 	}

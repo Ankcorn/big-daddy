@@ -1,6 +1,13 @@
-import type { Statement, SelectStatement, InsertStatement, UpdateStatement, DeleteStatement, Expression, Literal, Placeholder, BinaryExpression } from '@databases/sqlite-ast';
-import type { QueryPlanData } from '../topology';
-import type { SqlParam } from '../conductor/types';
+import type {
+	BinaryExpression,
+	Expression,
+	Literal,
+	Placeholder,
+	SelectStatement,
+	Statement,
+} from "@databases/sqlite-ast";
+import type { SqlParam } from "../conductor/types";
+import type { QueryPlanData } from "../topology";
 
 /**
  * Cache entry with timestamp and TTL
@@ -32,11 +39,10 @@ export interface CacheStats {
  * Cache invalidation happens on write operations (INSERT/UPDATE/DELETE) that affect indexed columns.
  */
 export class TopologyCache {
-	private cache = new Map<string, CacheEntry<any>>();
+	private cache = new Map<string, CacheEntry<unknown>>();
 
 	// Cache configuration
 	private readonly MAX_ENTRIES = 10000; // ~1MB for typical entries
-	private readonly TABLE_METADATA_TTL = 5 * 60 * 1000; // 5 minutes (very stable)
 	private readonly INDEX_LOOKUP_TTL = 60 * 1000; // 1 minute (moderate)
 	private readonly SHARD_ROUTE_TTL = 30 * 1000; // 30 seconds (conservative)
 
@@ -72,7 +78,11 @@ export class TopologyCache {
 	/**
 	 * Set index lookup result in cache
 	 */
-	setIndexLookup(indexName: string, keyValue: string, shardIds: number[]): void {
+	setIndexLookup(
+		indexName: string,
+		keyValue: string,
+		shardIds: number[],
+	): void {
 		const cacheKey = this.buildIndexCacheKey(indexName, keyValue);
 		this.set(cacheKey, shardIds, this.INDEX_LOOKUP_TTL);
 	}
@@ -82,9 +92,13 @@ export class TopologyCache {
 	 *
 	 * Returns null if the query is not cacheable (e.g., full table scans)
 	 */
-	buildQueryPlanCacheKey(tableName: string, statement: Statement, params: SqlParam[]): string | null {
+	buildQueryPlanCacheKey(
+		tableName: string,
+		statement: Statement,
+		params: SqlParam[],
+	): string | null {
 		// Only cache SELECT queries with WHERE clauses
-		if (statement.type === 'SelectStatement') {
+		if (statement.type === "SelectStatement") {
 			const selectStmt = statement as SelectStatement;
 			if (!selectStmt.where) {
 				return null; // Full table scan - not cacheable
@@ -122,15 +136,18 @@ export class TopologyCache {
 	 * This creates a deterministic string representation of the WHERE clause
 	 * that can be used as a cache key.
 	 */
-	private serializeWhereClause(where: Expression, params: SqlParam[]): string | null {
+	private serializeWhereClause(
+		where: Expression,
+		params: SqlParam[],
+	): string | null {
 		if (!where) return null;
 
 		// Handle binary expressions (=, AND, IN, etc.)
-		if (where.type === 'BinaryExpression') {
+		if (where.type === "BinaryExpression") {
 			const operator = where.operator;
 
 			// Equality: column = value
-			if (operator === '=') {
+			if (operator === "=") {
 				const columnName = this.extractColumnName(where);
 				const value = this.extractValue(where, params);
 				if (columnName && value !== null && value !== undefined) {
@@ -139,7 +156,7 @@ export class TopologyCache {
 			}
 
 			// AND: serialize both sides and combine
-			if (operator === 'AND') {
+			if (operator === "AND") {
 				const left = this.serializeWhereClause(where.left, params);
 				const right = this.serializeWhereClause(where.right, params);
 				if (left && right) {
@@ -149,12 +166,13 @@ export class TopologyCache {
 		}
 
 		// Handle IN expressions
-		if (where.type === 'InExpression') {
-			const columnName = where.expression.type === 'Identifier' ? where.expression.name : null;
+		if (where.type === "InExpression") {
+			const columnName =
+				where.expression.type === "Identifier" ? where.expression.name : null;
 			if (columnName && where.values) {
 				const values = where.values
-					.map((v: any) => this.extractValueFromExpression(v, params))
-					.filter((v: any) => v !== null && v !== undefined);
+					.map((v) => this.extractValueFromExpression(v, params))
+					.filter((v): v is SqlParam => v !== null && v !== undefined);
 				if (values.length > 0) {
 					return `${columnName}:in:${JSON.stringify(values)}`;
 				}
@@ -169,9 +187,9 @@ export class TopologyCache {
 	 */
 	private extractColumnName(expr: Expression): string | null {
 		const binExpr = expr as BinaryExpression;
-		if (binExpr.left?.type === 'Identifier') {
+		if (binExpr.left?.type === "Identifier") {
 			return binExpr.left.name;
-		} else if (binExpr.right?.type === 'Identifier') {
+		} else if (binExpr.right?.type === "Identifier") {
 			return binExpr.right.name;
 		}
 		return null;
@@ -180,11 +198,11 @@ export class TopologyCache {
 	/**
 	 * Extract value from a binary expression
 	 */
-	private extractValue(expr: Expression, params: SqlParam[]): any {
+	private extractValue(expr: Expression, params: SqlParam[]): SqlParam {
 		const binExpr = expr as BinaryExpression;
-		if (binExpr.left?.type === 'Identifier') {
+		if (binExpr.left?.type === "Identifier") {
 			return this.extractValueFromExpression(binExpr.right, params);
-		} else if (binExpr.right?.type === 'Identifier') {
+		} else if (binExpr.right?.type === "Identifier") {
 			return this.extractValueFromExpression(binExpr.left, params);
 		}
 		return null;
@@ -193,12 +211,15 @@ export class TopologyCache {
 	/**
 	 * Extract value from an expression node
 	 */
-	private extractValueFromExpression(expression: Expression, params: SqlParam[]): any {
+	private extractValueFromExpression(
+		expression: Expression,
+		params: SqlParam[],
+	): SqlParam {
 		if (!expression) return null;
-		if (expression.type === 'Literal') {
-			return (expression as Literal).value;
-		} else if (expression.type === 'Placeholder') {
-			return params[(expression as Placeholder).parameterIndex];
+		if (expression.type === "Literal") {
+			return (expression as Literal).value as SqlParam;
+		} else if (expression.type === "Placeholder") {
+			return params[(expression as Placeholder).parameterIndex]!;
 		}
 		return null;
 	}
@@ -326,7 +347,9 @@ export class TopologyCache {
 
 		// If still over limit, remove oldest entries
 		if (this.cache.size >= this.MAX_ENTRIES) {
-			const entries = Array.from(this.cache.entries()).sort((a, b) => a[1].timestamp - b[1].timestamp);
+			const entries = Array.from(this.cache.entries()).sort(
+				(a, b) => a[1].timestamp - b[1].timestamp,
+			);
 
 			const numToRemove = Math.ceil(this.MAX_ENTRIES * 0.1); // Remove 10% of entries
 			for (let i = 0; i < numToRemove && i < entries.length; i++) {
@@ -340,7 +363,7 @@ export class TopologyCache {
 	 * Get TTL for a query based on the statement type
 	 */
 	getTTLForQuery(statement: Statement): number {
-		if (statement.type === 'SelectStatement') {
+		if (statement.type === "SelectStatement") {
 			return this.SHARD_ROUTE_TTL;
 		}
 		// Default TTL
