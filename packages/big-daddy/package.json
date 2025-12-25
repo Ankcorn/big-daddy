@@ -7,13 +7,16 @@
 		".": "./src/index.ts"
 	},
 	"scripts": {
-		"deploy": "npm run css:build && wrangler deploy",
-		"dev": "tailwindcss -i ./src/styles.css -o ./src/assets/styles.css --watch & wrangler dev",
-		"start": "tailwindcss -i ./src/styles.css -o ./src/assets/styles.css --watch & wrangler dev",
+		"build": "pnpm run css:build",
+		"dev": "concurrently \"pnpm run css:watch\" \"wrangler dev\"",
+		"deploy": "pnpm run build && wrangler deploy",
 		"css:build": "tailwindcss -i ./src/styles.css -o ./src/assets/styles.css",
+		"css:watch": "tailwindcss -i ./src/styles.css -o ./src/assets/styles.css --watch",
 		"cf-typegen": "wrangler types",
+		"check:type": "tsc --noEmit",
+		"check:lint": "biome check .",
 		"test": "vitest run",
-		"typecheck": "tsc --noEmit"
+		"test:ci": "vitest run"
 	},
 	"dependencies": {
 		"@databases/sqlite-ast": "workspace:*",
@@ -22,13 +25,16 @@
 		"hono": "^4.10.4"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.10.3",
+		"@cloudflare/vitest-pool-workers": "catalog:default",
+		"@cloudflare/workers-types": "catalog:default",
+		"@databases/tsconfig": "workspace:*",
 		"@tailwindcss/cli": "^4.1.16",
 		"autoprefixer": "^10.4.21",
+		"concurrently": "^9.1.0",
 		"postcss": "^8.5.6",
 		"tailwindcss": "^4.1.16",
-		"typescript": "^5.5.2",
-		"vitest": "^3.2.4",
-		"wrangler": "^4.50.0"
+		"typescript": "catalog:default",
+		"vitest": "catalog:default",
+		"wrangler": "catalog:default"
 	}
 }

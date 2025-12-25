@@ -1,0 +1,6 @@
+ WARN  Issue while reading "/Users/thomas/.npmrc". Failed to replace env in config: ${NPM_TOKEN}
+
+> @databases/sqlite-ast@0.1.0 build /Users/thomas/projects/databases/packages/sqlite-ast
+> echo 'No build step needed - source exports'
+
+No build step needed - source exports

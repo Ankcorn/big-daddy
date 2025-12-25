@@ -84,6 +84,7 @@ export interface ShardStats {
 export interface QueryResult<T = Record<string, unknown>> {
 	rows: T[];
 	rowsAffected?: number;
+	error?: string; // Error message if query failed (used to preserve message across RPC boundary)
 	cacheStats?: QueryCacheStats; // Cache statistics (only for SELECT queries)
 	shardStats?: ShardStats[]; // Statistics for each shard queried
 }

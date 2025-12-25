@@ -1,0 +1,18 @@
+ WARN  Issue while reading "/Users/thomas/.npmrc". Failed to replace env in config: ${NPM_TOKEN}
+
+> @databases/sqlite-ast@0.1.0 test /Users/thomas/projects/databases/packages/sqlite-ast
+> vitest run
+
+
+ RUN  v3.2.4 /Users/thomas/projects/databases/packages/sqlite-ast
+
+ ✓ src/tokenizer.spec.ts (21 tests) 8ms
+ ✓ src/index.spec.ts (2 tests) 2ms
+ ✓ src/generator.test.ts (75 tests) 8ms
+ ✓ src/parser.test.ts (48 tests) 9ms
+
+ Test Files  4 passed (4)
+      Tests  146 passed (146)
+   Start at  00:02:26
+   Duration  390ms (transform 137ms, setup 0ms, collect 296ms, tests 27ms, environment 0ms, prepare 282ms)
+

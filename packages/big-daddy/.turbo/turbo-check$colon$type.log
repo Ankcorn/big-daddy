@@ -1,0 +1,113 @@
+ WARN  Issue while reading "/Users/thomas/.npmrc". Failed to replace env in config: ${NPM_TOKEN}
+
+> big-daddy@0.0.0 check:type /Users/thomas/projects/databases/packages/big-daddy
+> tsc --noEmit
+
+src/engine/conductor/utils/write.ts(140,20): error TS2339: Property 'error' does not exist on type 'QueryResult<Record<string, unknown>>'.
+src/engine/conductor/utils/write.ts(141,33): error TS2339: Property 'error' does not exist on type 'QueryResult<Record<string, unknown>>'.
+test/engine/build-index.test.ts(90,10): error TS2532: Object is possibly 'undefined'.
+test/engine/build-index.test.ts(91,10): error TS2532: Object is possibly 'undefined'.
+test/engine/build-index.test.ts(112,21): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+test/engine/build-index.test.ts(113,21): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+test/engine/build-index.test.ts(114,21): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+test/engine/build-index.test.ts(134,10): error TS2532: Object is possibly 'undefined'.
+test/engine/build-index.test.ts(151,10): error TS2532: Object is possibly 'undefined'.
+test/engine/build-index.test.ts(152,10): error TS2532: Object is possibly 'undefined'.
+test/engine/build-index.test.ts(213,10): error TS2532: Object is possibly 'undefined'.
+test/engine/build-index.test.ts(278,10): error TS2532: Object is possibly 'undefined'.
+test/engine/build-index.test.ts(318,10): error TS2532: Object is possibly 'undefined'.
+test/engine/build-index.test.ts(319,10): error TS2532: Object is possibly 'undefined'.
+test/engine/build-index.test.ts(320,10): error TS2532: Object is possibly 'undefined'.
+test/engine/build-index.test.ts(368,10): error TS2532: Object is possibly 'undefined'.
+test/engine/build-index.test.ts(384,36): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+test/engine/build-index.test.ts(385,38): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+test/engine/build-index.test.ts(442,10): error TS2532: Object is possibly 'undefined'.
+test/engine/build-index.test.ts(456,21): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+test/engine/conductor.test.ts(49,19): error TS2339: Property 'rows' does not exist on type 'never'.
+test/engine/conductor.test.ts(363,10): error TS2532: Object is possibly 'undefined'.
+test/engine/conductor.test.ts(364,10): error TS2532: Object is possibly 'undefined'.
+test/engine/conductor.test.ts(365,21): error TS2532: Object is possibly 'undefined'.
+test/engine/conductor.test.ts(366,10): error TS2532: Object is possibly 'undefined'.
+test/engine/conductor.test.ts(368,10): error TS2532: Object is possibly 'undefined'.
+test/engine/conductor.test.ts(383,10): error TS2532: Object is possibly 'undefined'.
+test/engine/conductor.test.ts(443,10): error TS2532: Object is possibly 'undefined'.
+test/engine/conductor.test.ts(444,21): error TS2532: Object is possibly 'undefined'.
+test/engine/conductor.test.ts(449,10): error TS2532: Object is possibly 'undefined'.
+test/engine/conductor.test.ts(645,48): error TS2339: Property 'rows' does not exist on type 'never'.
+test/engine/conductor.test.ts(646,42): error TS2339: Property 'rows' does not exist on type 'never'.
+test/engine/conductor.test.ts(681,57): error TS2558: Expected 0 type arguments, but got 1.
+test/engine/conductor.test.ts(686,48): error TS2339: Property 'rows' does not exist on type 'never'.
+test/engine/conductor.test.ts(687,42): error TS2339: Property 'rows' does not exist on type 'never'.
+test/engine/conductor.test.ts(714,28): error TS2532: Object is possibly 'undefined'.
+test/engine/resharding.test.ts(122,11): error TS2532: Object is possibly 'undefined'.
+test/engine/resharding.test.ts(123,11): error TS2532: Object is possibly 'undefined'.
+test/engine/resharding.test.ts(124,11): error TS2532: Object is possibly 'undefined'.
+test/engine/resharding.test.ts(293,11): error TS2532: Object is possibly 'undefined'.
+test/engine/resharding.test.ts(340,11): error TS2532: Object is possibly 'undefined'.
+test/engine/resharding.test.ts(357,22): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+test/engine/resharding.test.ts(652,5): error TS2345: Argument of type 'number | undefined' is not assignable to parameter of type 'number | bigint'.
+  Type 'undefined' is not assignable to type 'number | bigint'.
+test/engine/resharding.test.ts(753,11): error TS2532: Object is possibly 'undefined'.
+test/engine/resharding.test.ts(754,11): error TS2532: Object is possibly 'undefined'.
+test/engine/resharding.test.ts(755,11): error TS2532: Object is possibly 'undefined'.
+test/engine/resharding.test.ts(1175,5): error TS2345: Argument of type 'number | undefined' is not assignable to parameter of type 'number | bigint'.
+  Type 'undefined' is not assignable to type 'number | bigint'.
+test/engine/topology.test.ts(136,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(146,18): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(147,18): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(148,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(149,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(150,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(151,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(152,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(153,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(193,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(267,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(268,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(269,22): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(272,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(273,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(274,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(358,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(359,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(394,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(395,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(431,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(432,11): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(435,22): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(446,22): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(578,22): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+test/engine/topology.test.ts(579,22): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+test/engine/topology.test.ts(580,22): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+test/engine/topology.test.ts(635,22): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+test/engine/topology.test.ts(636,22): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+test/engine/topology.test.ts(637,22): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+test/engine/topology.test.ts(723,22): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+test/engine/topology.test.ts(724,22): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+test/engine/topology.test.ts(725,22): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+test/engine/topology.test.ts(786,12): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(787,12): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(824,12): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(826,12): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(1006,12): error TS2532: Object is possibly 'undefined'.
+test/engine/topology.test.ts(1051,11): error TS2345: Argument of type '(idx: VirtualIndex) => string' is not assignable to parameter of type '(value: { table_name: string; index_name: string; columns: string; index_type: "hash" | "unique"; }, index: number, array: { table_name: string; index_name: string; columns: string; index_type: "hash" | "unique"; }[]) => string'.
+  Types of parameters 'idx' and 'value' are incompatible.
+    Type '{ table_name: string; index_name: string; columns: string; index_type: "hash" | "unique"; }' is missing the following properties from type 'VirtualIndex': status, error_message, created_at, updated_at
+test/engine/topology.test.ts(1148,12): error TS2532: Object is possibly 'undefined'.
+ ELIFECYCLE  Command failed with exit code 2.

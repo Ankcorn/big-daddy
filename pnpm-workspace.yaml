@@ -1,3 +1,24 @@
 packages:
   - "packages/*"
   - "apps/*"
+
+catalog:
+  # TypeScript
+  typescript: "^5.8.3"
+
+  # Testing
+  vitest: "^3.2.4"
+  "@vitest/runner": "^3.2.4"
+  "@vitest/snapshot": "^3.2.4"
+
+  # Cloudflare
+  "@cloudflare/vitest-pool-workers": "^0.10.3"
+  "@cloudflare/workers-types": "^4.20251118.0"
+  wrangler: "^4.50.0"
+
+  # Linting
+  "@biomejs/biome": "^2.3.10"
+
+  # Build tools
+  esbuild: "^0.24.0"
+  tsup: "^8.3.0"

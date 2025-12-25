@@ -1,12 +1,14 @@
 {
-	"name": "big-daddy-benchmarks",
+	"name": "@databases/benchmarks",
 	"version": "0.0.1",
 	"private": true,
 	"type": "module",
 	"scripts": {
+		"build": "echo 'No build step needed'",
 		"dev": "wrangler dev",
 		"deploy": "wrangler deploy",
-		"typecheck": "tsc --noEmit",
+		"check:type": "tsc --noEmit",
+		"check:lint": "biome check .",
 		"bench": "artillery run artillery.yml",
 		"bench:simple": "artillery run artillery-simple.yml",
 		"blog:setup": "curl -X POST http://localhost:8787/setup",
@@ -18,9 +20,10 @@
 		"big-daddy": "workspace:*"
 	},
 	"devDependencies": {
-		"@cloudflare/workers-types": "^4.20241127.0",
+		"@cloudflare/workers-types": "catalog:default",
+		"@databases/tsconfig": "workspace:*",
 		"artillery": "^2.0.0",
-		"typescript": "^5.7.2",
-		"wrangler": "^3.94.0"
+		"typescript": "catalog:default",
+		"wrangler": "catalog:default"
 	}
 }

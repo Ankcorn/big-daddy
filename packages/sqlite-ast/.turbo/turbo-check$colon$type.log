@@ -1,0 +1,5 @@
+ WARN  Issue while reading "/Users/thomas/.npmrc". Failed to replace env in config: ${NPM_TOKEN}
+
+> @databases/sqlite-ast@0.1.0 check:type /Users/thomas/projects/databases/packages/sqlite-ast
+> tsc --noEmit
+

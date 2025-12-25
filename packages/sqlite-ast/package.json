@@ -1,24 +1,26 @@
 {
-  "name": "@databases/sqlite-ast",
-  "version": "0.1.0",
-  "description": "",
-  "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
-  "exports": {
-    ".": "./src/index.ts"
-  },
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "test": "vitest --run",
-    "test:watch": "vitest --watch"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "devDependencies": {
-    "vitest": "^2.1.0",
-    "typescript": "^5.6.0"
-  }
+	"name": "@databases/sqlite-ast",
+	"version": "0.1.0",
+	"description": "SQLite SQL parser and AST generator",
+	"type": "module",
+	"main": "src/index.ts",
+	"types": "src/index.ts",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"scripts": {
+		"build": "echo 'No build step needed - source exports'",
+		"check:type": "tsc --noEmit",
+		"check:lint": "biome check .",
+		"test": "vitest run",
+		"test:ci": "vitest run"
+	},
+	"keywords": ["sqlite", "sql", "parser", "ast"],
+	"author": "",
+	"license": "ISC",
+	"devDependencies": {
+		"@databases/tsconfig": "workspace:*",
+		"typescript": "catalog:default",
+		"vitest": "catalog:default"
+	}
 }

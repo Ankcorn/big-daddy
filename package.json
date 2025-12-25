@@ -1,22 +1,26 @@
 {
-  "name": "databases",
-  "version": "1.0.0",
-  "description": "",
-  "private": true,
-  "scripts": {
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
-    "lint": "biome check .",
-    "lint:fix": "biome check --write ."
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "packageManager": "pnpm@10.15.1",
-  "devDependencies": {
-    "@biomejs/biome": "^2.3.10",
-    "typescript": "^5.6.0",
-    "vitest": "^2.1.0"
-  }
+	"name": "databases",
+	"version": "1.0.0",
+	"description": "Distributed database built on Cloudflare Workers",
+	"private": true,
+	"scripts": {
+		"build": "turbo build",
+		"dev": "turbo dev",
+		"check": "turbo check:lint check:type",
+		"check:type": "turbo check:type",
+		"check:lint": "turbo check:lint",
+		"lint": "biome check .",
+		"lint:fix": "biome check --write .",
+		"test": "turbo test",
+		"test:ci": "turbo test:ci"
+	},
+	"keywords": [],
+	"author": "",
+	"license": "ISC",
+	"packageManager": "pnpm@9.12.0",
+	"devDependencies": {
+		"@biomejs/biome": "catalog:default",
+		"turbo": "^2.3.3",
+		"typescript": "catalog:default"
+	}
 }
