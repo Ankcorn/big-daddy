@@ -161,6 +161,14 @@ export async function handleCreateIndex(
 		throw new Error(result.error || "Failed to create index");
 	}
 
+	// Create async job record for tracking in topology
+	// This allows users to monitor index build progress via dashboard or PRAGMA
+	const jobId = crypto.randomUUID();
+	await topologyStub.createAsyncJob(jobId, "build_index", tableName, {
+		index_name: indexName,
+		columns: columns,
+	});
+
 	// Enqueue index build job for background processing
 	// This populates the virtual index metadata with existing data
 	await enqueueIndexJob(context, {
@@ -171,6 +179,7 @@ export async function handleCreateIndex(
 		index_name: indexName,
 		created_at: new Date().toISOString(),
 		correlation_id: context.correlationId,
+		job_id: jobId,
 	});
 
 	return {

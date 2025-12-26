@@ -215,6 +215,7 @@ function errorToMessage(
  *
  * This wraps the Effect version and converts it back to a Promise.
  * Errors are caught and the index status is updated to 'failed' on error.
+ * Also updates async job status for tracking in topology.
  */
 export async function processBuildIndexJob(
 	job: IndexBuildJob,
@@ -225,10 +226,36 @@ export async function processBuildIndexJob(
 		env.TOPOLOGY.idFromName(job.database_id),
 	) as DurableObjectStub<Topology>;
 
+	// Mark async job as running (if job_id was provided)
+	if (job.job_id) {
+		await topologyStub.startAsyncJob(job.job_id);
+	}
+
 	const effect = processBuildIndexJobEffect(job, env, correlationId).pipe(
+		Effect.tap(() =>
+			Effect.tryPromise({
+				try: async () => {
+					// Mark async job as completed on success
+					if (job.job_id) {
+						await topologyStub.completeAsyncJob(job.job_id);
+					}
+				},
+				catch: () => new Error("Failed to complete async job"),
+			}),
+		),
 		Effect.catchAll((error) =>
 			Effect.gen(function* () {
-				const errorMessage = errorToMessage(error);
+				// Handle our custom error types first, then fall back to plain Errors
+				// Note: Effect's TaggedError extends Error but its .message is just the tag name
+				const errorMessage =
+					error instanceof NoShardsFoundError ||
+					error instanceof TopologyFetchError ||
+					error instanceof IndexEntriesUpsertError ||
+					error instanceof IndexStatusUpdateError
+						? errorToMessage(error)
+						: error instanceof Error
+							? error.message
+							: String(error);
 
 				// Update index status to 'failed'
 				yield* Effect.tryPromise({
@@ -240,6 +267,15 @@ export async function processBuildIndexJob(
 						),
 					catch: () => new Error("Failed to update index status to failed"),
 				});
+
+				// Mark async job as failed
+				if (job.job_id) {
+					yield* Effect.tryPromise({
+						try: () =>
+							topologyStub.failAsyncJob(job.job_id as string, errorMessage),
+						catch: () => new Error("Failed to mark async job as failed"),
+					});
+				}
 
 				// Error will be logged automatically with context annotations
 				return yield* Effect.fail(new Error(errorMessage));

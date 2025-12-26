@@ -17,6 +17,7 @@ export interface IndexBuildJob {
 	index_name: string;
 	created_at: string;
 	correlation_id?: string; // Optional correlation ID for tracing
+	job_id?: string; // Async job ID for tracking in topology
 }
 
 /**
