@@ -73,13 +73,13 @@ pnpm deploy
 ### Example Usage
 
 ```typescript
-import { createConductor } from "big-daddy";
+import { createConnection } from "big-daddy";
 
-// Create a conductor client for your database
-const conductor = createConductor("my-database", correlationId, env);
+// Create a connection (initializes topology with 10 storage nodes)
+const sql = await createConnection("my-database", { nodes: 10 }, env);
 
 // Create a table
-await conductor.sql`
+await sql`
   CREATE TABLE users (
     id INTEGER PRIMARY KEY,
     email TEXT,
@@ -88,18 +88,18 @@ await conductor.sql`
 `;
 
 // Insert data (automatically routed to correct shard)
-await conductor.sql`
+await sql`
   INSERT INTO users (id, email, name)
   VALUES (${1}, ${"alice@example.com"}, ${"Alice"})
 `;
 
 // Query with type safety
-const result = await conductor.sql<{ id: number; name: string }>`
+const result = await sql<{ id: number; name: string }>`
   SELECT id, name FROM users WHERE id = ${userId}
 `;
 
 // Aggregations fan out to all shards and merge results
-const count = await conductor.sql`SELECT COUNT(*) FROM users`;
+const count = await sql`SELECT COUNT(*) FROM users`;
 ```
 
 ## Current Limitations
