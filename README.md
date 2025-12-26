@@ -111,7 +111,3 @@ This is a tech demo with known limitations:
 - **Approximate AVG** - averages the per-shard averages (not mathematically correct)
 - **Eventually consistent indexes** - UPDATE/DELETE index maintenance is async
 - **SQL subset** - no UNION, CTEs, window functions, or table aliases
-
-## Contributing
-
-This is a private, invite-only project. If you're here, you've been invited to explore and contribute.
