@@ -109,5 +109,4 @@ This is a tech demo with known limitations:
 - **No cross-shard JOINs** - queries cannot join data across shards
 - **No cross-shard transactions** - ACID guarantees only within a single shard
 - **Approximate AVG** - averages the per-shard averages (not mathematically correct)
-- **Eventually consistent indexes** - UPDATE/DELETE index maintenance is async
 - **SQL subset** - no UNION, CTEs, window functions, or table aliases
