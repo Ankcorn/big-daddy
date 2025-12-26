@@ -4,11 +4,15 @@
 
 A distributed database built on Cloudflare Durable Objects, using Vitess-like virtual sharding to scale SQLite across the edge.
 
+![Dashboard](./dash.png)
+
 ## What This Demonstrates
 
 This project explores whether you can build a horizontally-scalable SQL database entirely on Cloudflare Workers and Durable Objects. The key idea is **virtual sharding** - partitioning data across multiple SQLite-backed Durable Objects while presenting a single logical database to the client.
 
 Each query is analyzed, routed to the relevant shards, executed in parallel, and the results are merged - all at the edge, with no central coordinator server.
+
+
 
 ## Architecture
 
