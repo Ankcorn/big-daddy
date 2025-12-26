@@ -74,13 +74,26 @@ pnpm dev
 pnpm deploy
 ```
 
+### Binding to Big Daddy
+
+Add a service binding in your worker's `wrangler.jsonc`:
+
+```jsonc
+{
+  "services": [
+    {
+      "binding": "BIG_DADDY",
+      "service": "big-daddy"
+    }
+  ]
+}
+```
+
 ### Example Usage
 
 ```typescript
-import { createConnection } from "big-daddy";
-
-// Create a connection (initializes topology with 10 storage nodes)
-const sql = await createConnection("my-database", { nodes: 10 }, env);
+// Create a connection via service binding (initializes topology with 10 storage nodes)
+const sql = await env.BIG_DADDY.createConnection("my-database", { nodes: 10 });
 
 // Create a table
 await sql`
