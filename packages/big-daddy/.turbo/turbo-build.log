@@ -1,4 +1,5 @@
  WARN  Issue while reading "/Users/thomas/.npmrc". Failed to replace env in config: ${NPM_TOKEN}
+ WARN  Issue while reading "/Users/thomas/.npmrc". Failed to replace env in config: ${NPM_TOKEN}
 
 > big-daddy@0.0.0 build /Users/thomas/projects/databases/packages/big-daddy
 > pnpm run css:build
@@ -10,4 +11,4 @@
 
 ≈ tailwindcss v4.1.16
 
-Done in 39ms
+Done in 36ms

@@ -5,7 +5,8 @@
 	"private": true,
 	"scripts": {
 		"build": "turbo build",
-		"dev": "turbo dev",
+		"dev": "pnpm --filter big-daddy dev",
+		"deploy": "pnpm --filter big-daddy deploy",
 		"check": "turbo check:lint check:type",
 		"check:type": "turbo check:type",
 		"check:lint": "turbo check:lint",

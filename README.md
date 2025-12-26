@@ -1,50 +1,117 @@
-# databases
+# Big Daddy
 
-This is a Distributed Database, it uses cloudflare durable objects and a vitess like virtual sharding mecahnism to efficiently scale out the sql lite based durable object databases to a currently unknown maximum size.
+> **Tech Demo** - This is an experimental project exploring distributed SQL on Cloudflare's edge infrastructure. Not for production use.
 
-It has 3 parts
+A distributed database built on Cloudflare Durable Objects, using Vitess-like virtual sharding to scale SQLite across the edge.
 
-* Conductor - Typescript based Query Planner and Tierd Metadata Cache.
-* Topology - Durable Object metadata store - tracks tables/shards/indexes
-* Storage - N Durable Object dumb storage nodes
+## What This Demonstrates
 
-The query planning is also powered by our homemade sqlite-ast parser found at `packages/sqlite-ast`. This enables us to understand the users query and understand exactly where we need to read or write the data. It may be missing features as it its a WIP. We are currently working on maintaining the indexes via a queue.
+This project explores whether you can build a horizontally-scalable SQL database entirely on Cloudflare Workers and Durable Objects. The key idea is **virtual sharding** - partitioning data across multiple SQLite-backed Durable Objects while presenting a single logical database to the client.
 
-The index tests delete-index-maintenance insert-index-maintenance.
+Each query is analyzed, routed to the relevant shards, executed in parallel, and the results are merged - all at the edge, with no central coordinator server.
 
-The update-index-maintenance tests are failing and we need to figure out why. I vaguely remember this is where we got to last session so something is probably incomplete
+## Architecture
 
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         Client                              │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                       Conductor                             │
+│            (Query Planner + Tiered Metadata Cache)          │
+│                                                             │
+│  • Parses SQL using sqlite-ast                              │
+│  • Determines which shards to query                         │
+│  • Fans out requests, merges results                        │
+└─────────────────────────────────────────────────────────────┘
+                              │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+┌───────────────────┐ ┌─────────────┐ ┌─────────────────────┐
+│     Topology      │ │   Storage   │ │       Storage       │
+│  (Durable Object) │ │   Shard 1   │ │      Shard N        │
+│                   │ │             │ │                     │
+│ • Table metadata  │ │  • SQLite   │ │  • SQLite           │
+│ • Shard mappings  │ │  • Indexes  │ │  • Indexes          │
+│ • Index registry  │ │             │ │                     │
+└───────────────────┘ └─────────────┘ └─────────────────────┘
+```
 
-● Summary: 114 Remaining any Usages
+**Conductor** - Cloudflare Worker that acts as the query gateway. Parses incoming SQL, consults the topology for routing, fans out to storage shards, and merges results.
 
-  Priority breakdown:
+**Topology** - Single Durable Object that stores metadata: table schemas, shard assignments, and index definitions.
 
-  1. as any Casts (46 instances) - Quick wins
+**Storage** - N Durable Objects, each running SQLite. These are "dumb" storage nodes that execute queries they receive.
 
-  Most are cast workarounds for type system limitations:
-  - Database query results: .toArray() as unknown as any[] - could use typed arrays (StorageNode[],
-   TableMetadata[], etc.)
-  - AST handling: statement as any - could use Statement type from sqlite-ast
-  - Result extraction: (result as any).rows - could use QueryResult type
+## Project Structure
 
-  2. any[] Array Types (25 instances) - Medium effort
+```
+packages/
+├── big-daddy/       # Main application (Conductor, Topology, Storage)
+├── sqlite-ast/      # Homegrown SQL parser for query analysis
+├── benchmarks/      # Performance testing
+└── tsconfig/        # Shared TypeScript config
+```
 
-  - params: any[] - should be SqlParam[] (we already did some)
-  - values: any[] - temporary arrays for extracted values
-  - columns: any[], row: any[] - row data structures
-  - Function params/returns that should be typed
+## Getting Started
 
-  3. AST/Expression Parameters (13 instances) - Medium-high effort
+### Setup
 
-  Files needing updates:
-  - topology-cache.ts: where: any, expression: any
-  - topology/index.ts: where: any, statement: any, expression: any
-  - virtual-indexes.ts: where: any, statement: any, expression: any
-  - helpers.ts: expression: any
+```bash
+# Install dependencies
+pnpm install
 
-  These should use: Expression | BinaryExpression | Identifier types from sqlite-ast
+# Run locally
+pnpm dev
 
-  4. Storage Dependency (4 instances) - Blocked by type definition
+# Deploy to Cloudflare
+pnpm deploy
+```
 
-  Files: topology/{crud,virtual-indexes,resharding}.ts, administration.ts
-  - Need to find the actual Storage type to replace any
+### Example Usage
+
+```typescript
+import { createConductor } from "big-daddy";
+
+// Create a conductor client for your database
+const conductor = createConductor("my-database", correlationId, env);
+
+// Create a table
+await conductor.sql`
+  CREATE TABLE users (
+    id INTEGER PRIMARY KEY,
+    email TEXT,
+    name TEXT
+  )
+`;
+
+// Insert data (automatically routed to correct shard)
+await conductor.sql`
+  INSERT INTO users (id, email, name)
+  VALUES (${1}, ${"alice@example.com"}, ${"Alice"})
+`;
+
+// Query with type safety
+const result = await conductor.sql<{ id: number; name: string }>`
+  SELECT id, name FROM users WHERE id = ${userId}
+`;
+
+// Aggregations fan out to all shards and merge results
+const count = await conductor.sql`SELECT COUNT(*) FROM users`;
+```
+
+## Current Limitations
+
+This is a tech demo with known limitations:
+
+- **No cross-shard JOINs** - queries cannot join data across shards
+- **No cross-shard transactions** - ACID guarantees only within a single shard
+- **Approximate AVG** - averages the per-shard averages (not mathematically correct)
+- **Eventually consistent indexes** - UPDATE/DELETE index maintenance is async
+- **SQL subset** - no UNION, CTEs, window functions, or table aliases
+
+## Contributing
+
+This is a private, invite-only project. If you're here, you've been invited to explore and contribute.

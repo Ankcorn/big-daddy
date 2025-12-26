@@ -1,18 +1,37 @@
- WARN  Issue while reading "/Users/thomas/.npmrc". Failed to replace env in config: ${NPM_TOKEN}
+
+[43m[30m WARN [39m[49m Issue while reading "/Users/thomas/.npmrc". Failed to replace env in config: ${NPM_TOKEN}
 
 > @databases/sqlite-ast@0.1.0 test /Users/thomas/projects/databases/packages/sqlite-ast
 > vitest run
 
+[?25l
+[1m[46m RUN [49m[22m [36mv3.2.4 [39m[90m/Users/thomas/projects/databases/packages/sqlite-ast[39m
 
- RUN  v3.2.4 /Users/thomas/projects/databases/packages/sqlite-ast
+[?2026h
+[1m[33m ❯ [39m[22msrc/parser.test.ts[2m [queued][22m
 
- ✓ src/tokenizer.spec.ts (21 tests) 8ms
- ✓ src/index.spec.ts (2 tests) 2ms
- ✓ src/generator.test.ts (75 tests) 8ms
- ✓ src/parser.test.ts (48 tests) 9ms
+[2m Test Files [22m[1m[32m0 passed[39m[22m[90m (4)[39m
+[2m      Tests [22m[1m[32m0 passed[39m[22m[90m (0)[39m
+[2m   Start at [22m00:04:01
+[2m   Duration [22m403ms
+[?2026l[?2026h[K[1A[K[1A[K[1A[K[1A[K[1A[K[1A[K[1A[K
+[1m[33m ❯ [39m[22msrc/generator.test.ts[2m 0/75[22m
+[1m[33m ❯ [39m[22msrc/index.spec.ts[2m 1/2[22m
+[1m[33m ❯ [39m[22msrc/parser.test.ts[2m 0/48[22m
+[1m[33m ❯ [39m[22msrc/tokenizer.spec.ts[2m 0/21[22m
 
- Test Files  4 passed (4)
-      Tests  146 passed (146)
-   Start at  00:02:26
-   Duration  390ms (transform 137ms, setup 0ms, collect 296ms, tests 27ms, environment 0ms, prepare 282ms)
+[2m Test Files [22m[1m[32m0 passed[39m[22m[90m (4)[39m
+[2m      Tests [22m[1m[32m1 passed[39m[22m[90m (146)[39m
+[2m   Start at [22m00:04:01
+[2m   Duration [22m504ms
+[?2026l[K[1A[K[1A[K[1A[K[1A[K[1A[K[1A[K[1A[K[1A[K[1A[K[1A[K [32m✓[39m src/index.spec.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 1[2mms[22m[39m
+ [32m✓[39m src/generator.test.ts [2m([22m[2m75 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/parser.test.ts [2m([22m[2m48 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/tokenizer.spec.ts [2m([22m[2m21 tests[22m[2m)[22m[32m 6[2mms[22m[39m
 
+[2m Test Files [22m [1m[32m4 passed[39m[22m[90m (4)[39m
+[2m      Tests [22m [1m[32m146 passed[39m[22m[90m (146)[39m
+[2m   Start at [22m 00:04:01
+[2m   Duration [22m 542ms[2m (transform 135ms, setup 0ms, collect 301ms, tests 25ms, environment 0ms, prepare 359ms)[22m
+
+[?25h
