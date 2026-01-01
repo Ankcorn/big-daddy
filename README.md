@@ -67,6 +67,10 @@ packages/
 # Install dependencies
 pnpm install
 
+# Login to wrangler (needed to parse SQL w/ AI)
+# Or set a CLOUDFLARE_API_TOKEN in the projects .env file
+wrangler login
+
 # Run locally
 pnpm dev
 
