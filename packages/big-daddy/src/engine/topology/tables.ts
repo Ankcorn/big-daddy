@@ -5,6 +5,25 @@
  * These are executed during initialization to set up the persistent storage.
  */
 
+/**
+ * Run schema migrations that add new columns to existing tables.
+ * These are safe to run multiple times (idempotent).
+ */
+export function runSchemaMigrations(
+	sqlExec: (sql: string) => void,
+	tableInfo: (tableName: string) => Array<{ name: string }>,
+): void {
+	// Migration: Add row_count column to table_shards if not present
+	const tableShardsColumns = tableInfo("table_shards");
+	const hasRowCount = tableShardsColumns.some((col) => col.name === "row_count");
+	if (!hasRowCount && tableShardsColumns.length > 0) {
+		// Table exists but row_count column is missing - add it
+		sqlExec(
+			`ALTER TABLE table_shards ADD COLUMN row_count INTEGER NOT NULL DEFAULT 0`,
+		);
+	}
+}
+
 export function initializeSchemaTables(sqlExec: (sql: string) => void): void {
 	// Cluster metadata - stores if cluster is created
 	sqlExec(`
@@ -48,6 +67,7 @@ export function initializeSchemaTables(sqlExec: (sql: string) => void): void {
 			shard_id INTEGER NOT NULL,
 			node_id TEXT NOT NULL,
 			status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'pending', 'to_be_deleted', 'failed')),
+			row_count INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL,
 			PRIMARY KEY (table_name, shard_id),

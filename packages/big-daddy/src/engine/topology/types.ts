@@ -33,7 +33,18 @@ export interface TableShard {
 	shard_id: number;
 	node_id: string;
 	status: "active" | "pending" | "to_be_deleted" | "failed";
+	row_count: number;
 	created_at: number;
+	updated_at: number;
+}
+
+/**
+ * Per-shard row count for a table
+ */
+export interface ShardRowCount {
+	table_name: string;
+	shard_id: number;
+	row_count: number;
 	updated_at: number;
 }
 

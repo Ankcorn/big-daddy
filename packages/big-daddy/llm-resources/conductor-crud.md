@@ -20,12 +20,14 @@
 4. Execute per-shard INSERTs with remapped parameters
 5. Dispatch index maintenance events
 6. Invalidate cache
+7. **Bump per-shard row counts via `batchBumpTableShardRowCounts()`**
 
 **Key Functions:**
 - `groupInsertByShards()` - Groups rows by target shard, remaps placeholder indices
-- `extractInsertedRows()` - Builds row data for index maintenance
 
-**Important:** Multi-row INSERTs are split by shard key hash.
+**Important:** 
+- Multi-row INSERTs are split by shard key hash
+- Row counts use VALUES.length (not SQLite's rowsWritten which includes index writes)
 
 ---
 
@@ -50,6 +52,7 @@
 4. Execute on shards
 5. Dispatch index maintenance with old rows
 6. Invalidate cache
+7. **Decrement per-shard row counts via `batchBumpTableShardRowCounts()`**
 
 ---
 

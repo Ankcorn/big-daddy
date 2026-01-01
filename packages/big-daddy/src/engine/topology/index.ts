@@ -23,12 +23,13 @@ import type {
 import { AdministrationOperations } from "./administration";
 import { CRUDOperations } from "./crud";
 import { ReshardingOperations } from "./resharding";
-import { initializeSchemaTables } from "./tables";
+import { initializeSchemaTables, runSchemaMigrations } from "./tables";
 import type {
 	AsyncJob,
 	IndexStatus,
 	QueryPlanData,
 	ReshardingState,
+	ShardRowCount,
 	SqlParam,
 	StorageNode,
 	TableMetadata,
@@ -85,6 +86,14 @@ export class Topology extends DurableObject<Env> {
 	 */
 	private initializeSchema(): void {
 		initializeSchemaTables((sql: string) => this.ctx.storage.sql.exec(sql));
+		// Run migrations for existing schemas (adds new columns if missing)
+		runSchemaMigrations(
+			(sql: string) => this.ctx.storage.sql.exec(sql),
+			(tableName: string) =>
+				this.ctx.storage.sql
+					.exec(`PRAGMA table_info('${tableName}')`)
+					.toArray() as Array<{ name: string }>,
+		);
 	}
 
 	/**
@@ -141,6 +150,53 @@ export class Topology extends DurableObject<Env> {
 	): Promise<{ success: boolean }> {
 		this.ensureCreated();
 		return this.crud.updateTopology(updates);
+	}
+
+	// ============================================================================
+	// Row Count Operations
+	// ============================================================================
+
+	/**
+	 * Get row counts for all active shards of a table
+	 */
+	getTableShardRowCounts(tableName: string): ShardRowCount[] {
+		this.ensureCreated();
+		return this.crud.getTableShardRowCounts(tableName);
+	}
+
+	/**
+	 * Bump (increment or decrement) the row count for a specific shard
+	 * Clamps at 0 to prevent negative counts
+	 */
+	bumpTableShardRowCount(
+		tableName: string,
+		shardId: number,
+		delta: number,
+	): void {
+		this.ensureCreated();
+		this.crud.bumpTableShardRowCount(tableName, shardId, delta);
+	}
+
+	/**
+	 * Batch bump row counts for multiple shards of a table
+	 */
+	batchBumpTableShardRowCounts(
+		tableName: string,
+		deltaByShard: Map<number, number>,
+	): void {
+		this.ensureCreated();
+		this.crud.batchBumpTableShardRowCounts(tableName, deltaByShard);
+	}
+
+	/**
+	 * Set row counts for shards (used after resharding to set exact counts)
+	 */
+	setTableShardRowCounts(
+		tableName: string,
+		countsByShardId: Map<number, number>,
+	): void {
+		this.ensureCreated();
+		this.crud.setTableShardRowCounts(tableName, countsByShardId);
 	}
 
 	// ============================================================================
@@ -760,4 +816,5 @@ export type {
 	TopologyUpdates,
 	IndexStatus,
 	QueryPlanData,
+	ShardRowCount,
 };

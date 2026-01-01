@@ -153,6 +153,28 @@ export async function handleDelete(
 		duration: 0,
 	}));
 
+	// STEP 8: Decrement row counts for each shard
+	if (result.rowsAffected && result.rowsAffected > 0) {
+		const { databaseId, topology } = context;
+		const topologyId = topology.idFromName(databaseId);
+		const topologyStub = topology.get(topologyId);
+
+		// Build delta map from per-shard results (negative for deletions)
+		const deltaByShard = new Map<number, number>();
+		for (let i = 0; i < shardsToQuery.length; i++) {
+			const shard = shardsToQuery[i];
+			const shardResult = results[i];
+			const rowsAffected = shardResult?.rowsAffected ?? 0;
+			if (shard && rowsAffected > 0) {
+				deltaByShard.set(shard.shard_id, -rowsAffected);
+			}
+		}
+
+		if (deltaByShard.size > 0) {
+			await topologyStub.batchBumpTableShardRowCounts(tableName, deltaByShard);
+		}
+	}
+
 	logger.info`DELETE query completed ${{ shardsQueried: shardsToQuery.length }} ${{ rowsAffected: result.rowsAffected }}`;
 
 	return result;

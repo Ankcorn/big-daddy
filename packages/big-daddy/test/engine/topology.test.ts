@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import { parse } from "@databases/sqlite-ast";
 import { describe, expect, it } from "vitest";
 import type {
+	ShardRowCount,
 	StorageNode,
 	TableShard,
 	VirtualIndex,
@@ -723,6 +724,301 @@ describe("Topology Durable Object", () => {
 			expect(JSON.parse(user0!.shard_ids)).toEqual([0]);
 			expect(JSON.parse(user50!.shard_ids)).toEqual([0]);
 			expect(JSON.parse(user99!.shard_ids)).toEqual([1]);
+		});
+	});
+
+	describe("Row Count Operations", () => {
+		it("should initialize shards with row_count = 0", async () => {
+			const id = env.TOPOLOGY.idFromName("test-rowcount-init-1");
+			const stub = env.TOPOLOGY.get(id);
+
+			await stub.create(2);
+			await stub.updateTopology({
+				tables: {
+					add: [
+						{
+							table_name: "users",
+							primary_key: "id",
+							primary_key_type: "INTEGER",
+							shard_strategy: "hash",
+							shard_key: "id",
+							num_shards: 3,
+							block_size: 500,
+						},
+					],
+				},
+			});
+
+			const topology = await stub.getTopology();
+			const userShards = topology.table_shards.filter(
+				(s: TableShard) => s.table_name === "users",
+			);
+
+			expect(userShards).toHaveLength(3);
+			userShards.forEach((shard: TableShard) => {
+				expect(shard.row_count).toBe(0);
+			});
+		});
+
+		it("should get row counts for a table", async () => {
+			const id = env.TOPOLOGY.idFromName("test-rowcount-get-1");
+			const stub = env.TOPOLOGY.get(id);
+
+			await stub.create(2);
+			await stub.updateTopology({
+				tables: {
+					add: [
+						{
+							table_name: "users",
+							primary_key: "id",
+							primary_key_type: "INTEGER",
+							shard_strategy: "hash",
+							shard_key: "id",
+							num_shards: 2,
+							block_size: 500,
+						},
+					],
+				},
+			});
+
+			const rowCounts = await stub.getTableShardRowCounts("users");
+			expect(rowCounts).toHaveLength(2);
+			rowCounts.forEach((rc: ShardRowCount) => {
+				expect(rc.table_name).toBe("users");
+				expect(rc.row_count).toBe(0);
+				expect(rc.updated_at).toBeGreaterThan(0);
+			});
+		});
+
+		it("should bump row count for a shard (positive delta)", async () => {
+			const id = env.TOPOLOGY.idFromName("test-rowcount-bump-1");
+			const stub = env.TOPOLOGY.get(id);
+
+			await stub.create(2);
+			await stub.updateTopology({
+				tables: {
+					add: [
+						{
+							table_name: "users",
+							primary_key: "id",
+							primary_key_type: "INTEGER",
+							shard_strategy: "hash",
+							shard_key: "id",
+							num_shards: 2,
+							block_size: 500,
+						},
+					],
+				},
+			});
+
+			// Bump shard 0 by +10
+			await stub.bumpTableShardRowCount("users", 0, 10);
+
+			const rowCounts = await stub.getTableShardRowCounts("users");
+			const shard0 = rowCounts.find((rc: ShardRowCount) => rc.shard_id === 0);
+			const shard1 = rowCounts.find((rc: ShardRowCount) => rc.shard_id === 1);
+
+			expect(shard0?.row_count).toBe(10);
+			expect(shard1?.row_count).toBe(0);
+		});
+
+		it("should bump row count for a shard (negative delta)", async () => {
+			const id = env.TOPOLOGY.idFromName("test-rowcount-bump-2");
+			const stub = env.TOPOLOGY.get(id);
+
+			await stub.create(2);
+			await stub.updateTopology({
+				tables: {
+					add: [
+						{
+							table_name: "users",
+							primary_key: "id",
+							primary_key_type: "INTEGER",
+							shard_strategy: "hash",
+							shard_key: "id",
+							num_shards: 2,
+							block_size: 500,
+						},
+					],
+				},
+			});
+
+			// First add 100 rows
+			await stub.bumpTableShardRowCount("users", 0, 100);
+			// Then remove 30 rows
+			await stub.bumpTableShardRowCount("users", 0, -30);
+
+			const rowCounts = await stub.getTableShardRowCounts("users");
+			const shard0 = rowCounts.find((rc: ShardRowCount) => rc.shard_id === 0);
+
+			expect(shard0?.row_count).toBe(70);
+		});
+
+		it("should clamp row count at 0 (prevent negative)", async () => {
+			const id = env.TOPOLOGY.idFromName("test-rowcount-clamp-1");
+			const stub = env.TOPOLOGY.get(id);
+
+			await stub.create(2);
+			await stub.updateTopology({
+				tables: {
+					add: [
+						{
+							table_name: "users",
+							primary_key: "id",
+							primary_key_type: "INTEGER",
+							shard_strategy: "hash",
+							shard_key: "id",
+							num_shards: 2,
+							block_size: 500,
+						},
+					],
+				},
+			});
+
+			// Try to decrement below 0
+			await stub.bumpTableShardRowCount("users", 0, -100);
+
+			const rowCounts = await stub.getTableShardRowCounts("users");
+			const shard0 = rowCounts.find((rc: ShardRowCount) => rc.shard_id === 0);
+
+			expect(shard0?.row_count).toBe(0); // Clamped at 0
+		});
+
+		it("should batch bump row counts for multiple shards", async () => {
+			const id = env.TOPOLOGY.idFromName("test-rowcount-batch-1");
+			const stub = env.TOPOLOGY.get(id);
+
+			await stub.create(3);
+			await stub.updateTopology({
+				tables: {
+					add: [
+						{
+							table_name: "users",
+							primary_key: "id",
+							primary_key_type: "INTEGER",
+							shard_strategy: "hash",
+							shard_key: "id",
+							num_shards: 3,
+							block_size: 500,
+						},
+					],
+				},
+			});
+
+			// Batch bump: shard 0 +10, shard 1 +20, shard 2 +30
+			const deltaByShard = new Map<number, number>([
+				[0, 10],
+				[1, 20],
+				[2, 30],
+			]);
+			await stub.batchBumpTableShardRowCounts("users", deltaByShard);
+
+			const rowCounts = await stub.getTableShardRowCounts("users");
+			expect(rowCounts.find((rc: ShardRowCount) => rc.shard_id === 0)?.row_count).toBe(10);
+			expect(rowCounts.find((rc: ShardRowCount) => rc.shard_id === 1)?.row_count).toBe(20);
+			expect(rowCounts.find((rc: ShardRowCount) => rc.shard_id === 2)?.row_count).toBe(30);
+		});
+
+		it("should set row counts for shards (used after resharding)", async () => {
+			const id = env.TOPOLOGY.idFromName("test-rowcount-set-1");
+			const stub = env.TOPOLOGY.get(id);
+
+			await stub.create(2);
+			await stub.updateTopology({
+				tables: {
+					add: [
+						{
+							table_name: "users",
+							primary_key: "id",
+							primary_key_type: "INTEGER",
+							shard_strategy: "hash",
+							shard_key: "id",
+							num_shards: 2,
+							block_size: 500,
+						},
+					],
+				},
+			});
+
+			// Set exact row counts
+			const countsByShardId = new Map<number, number>([
+				[0, 500],
+				[1, 750],
+			]);
+			await stub.setTableShardRowCounts("users", countsByShardId);
+
+			const rowCounts = await stub.getTableShardRowCounts("users");
+			expect(rowCounts.find((rc: ShardRowCount) => rc.shard_id === 0)?.row_count).toBe(500);
+			expect(rowCounts.find((rc: ShardRowCount) => rc.shard_id === 1)?.row_count).toBe(750);
+		});
+
+		it("should only return row counts for active shards", async () => {
+			const id = env.TOPOLOGY.idFromName("test-rowcount-active-1");
+			const stub = env.TOPOLOGY.get(id);
+
+			await stub.create(3);
+			await stub.updateTopology({
+				tables: {
+					add: [
+						{
+							table_name: "users",
+							primary_key: "id",
+							primary_key_type: "INTEGER",
+							shard_strategy: "hash",
+							shard_key: "id",
+							num_shards: 1,
+							block_size: 500,
+						},
+					],
+				},
+			});
+
+			// Set row count on shard 0
+			await stub.bumpTableShardRowCount("users", 0, 100);
+
+			// Create pending shards (resharding)
+			const changeLogId = "test-log";
+			await stub.createPendingShards("users", 2, changeLogId);
+
+			// getTableShardRowCounts should only return active shards (not pending)
+			const rowCounts = await stub.getTableShardRowCounts("users");
+			expect(rowCounts).toHaveLength(1);
+			expect(rowCounts[0]?.shard_id).toBe(0);
+			expect(rowCounts[0]?.row_count).toBe(100);
+		});
+
+		it("should update updated_at timestamp on row count changes", async () => {
+			const id = env.TOPOLOGY.idFromName("test-rowcount-timestamp-1");
+			const stub = env.TOPOLOGY.get(id);
+
+			await stub.create(2);
+			await stub.updateTopology({
+				tables: {
+					add: [
+						{
+							table_name: "users",
+							primary_key: "id",
+							primary_key_type: "INTEGER",
+							shard_strategy: "hash",
+							shard_key: "id",
+							num_shards: 1,
+							block_size: 500,
+						},
+					],
+				},
+			});
+
+			const initialRowCounts = await stub.getTableShardRowCounts("users");
+			const initialTimestamp = initialRowCounts[0]?.updated_at ?? 0;
+
+			// Wait a bit and bump count
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			await stub.bumpTableShardRowCount("users", 0, 5);
+
+			const updatedRowCounts = await stub.getTableShardRowCounts("users");
+			const updatedTimestamp = updatedRowCounts[0]?.updated_at ?? 0;
+
+			expect(updatedTimestamp).toBeGreaterThan(initialTimestamp);
 		});
 	});
 

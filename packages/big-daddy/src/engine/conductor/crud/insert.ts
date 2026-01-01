@@ -193,7 +193,9 @@ export async function handleInsert(
 		params,
 	);
 
-	logger.info`Query plan determined for INSERT ${{ shardsSelected: planData.shardsToQuery.length }} ${{ indexesUsed: planData.virtualIndexes.length }} ${{ shardKey: planData.shardKey }}`;
+	logger.info`Query plan determined for INSERT ${{ shardsSelected: planData.shardsToQuery.length }} ${{
+		indexesUsed: planData.virtualIndexes.length,
+	}} ${{ shardKey: planData.shardKey }}`;
 
 	const allShards = planData.shardsToQuery;
 
@@ -214,12 +216,16 @@ export async function handleInsert(
 			? allShards
 			: allShards.filter((s) => perShardStatements.has(s.shard_id));
 
-	logger.info`INSERT rows grouped by shard ${{ shardsWithRows: perShardStatements.size }} ${{ totalShards: allShards.length }} ${{ shardsToQueryLength: shardsToQuery.length }}`;
+	logger.info`INSERT rows grouped by shard ${{ shardsWithRows: perShardStatements.size }} ${{ totalShards: allShards.length }} ${{
+		shardsToQueryLength: shardsToQuery.length,
+	}}`;
 
 	// STEP 3: Log write if resharding is in progress
 	await logWriteIfResharding(tableName, statement.type, query, params, context);
 
 	// STEP 4: Execute per-shard INSERTs
+	// Track per-shard results for row count bumping (declared here for scope)
+	const resultsPerShard = new Map<number, QueryResult>();
 	let execResult:
 		| {
 				results:
@@ -232,7 +238,6 @@ export async function handleInsert(
 		| undefined;
 	if (perShardStatements.size > 0) {
 		// Execute only the shards that have rows
-		const resultsPerShard = new Map<number, QueryResult>();
 		const shardStatsPerShard: ShardStats[] = [];
 
 		for (const [
@@ -357,6 +362,40 @@ export async function handleInsert(
 
 	// Add shard statistics
 	result.shardStats = execResult.shardStats;
+
+	// STEP 8: Bump row counts for each shard
+	// Use VALUES clause length (logical rows), not rowsAffected from SQLite
+	// SQLite's rowsWritten includes B-tree writes for indexes (e.g., composite PK),
+	// which would inflate counts by 2x for tables with indexes
+	const { databaseId, topology } = context;
+	const topologyId = topology.idFromName(databaseId);
+	const topologyStub = topology.get(topologyId);
+
+	if (perShardStatements.size > 0) {
+		// Build delta map from VALUES clause length per shard
+		const deltaByShard = new Map<number, number>();
+		for (const [shardId, { statement: shardStatement }] of perShardStatements) {
+			const rowsInserted = shardStatement.values?.length ?? 0;
+			if (rowsInserted > 0) {
+				deltaByShard.set(shardId, rowsInserted);
+			}
+		}
+
+		if (deltaByShard.size > 0) {
+			await topologyStub.batchBumpTableShardRowCounts(tableName, deltaByShard);
+		}
+	} else {
+		// Fallback case: shard key not in INSERT, rows were inserted on all shards
+		// Each shard gets all the rows from the original statement
+		const rowsInserted = statement.values?.length ?? 0;
+		if (rowsInserted > 0) {
+			const deltaByShard = new Map<number, number>();
+			for (const shard of shardsToQuery) {
+				deltaByShard.set(shard.shard_id, rowsInserted);
+			}
+			await topologyStub.batchBumpTableShardRowCounts(tableName, deltaByShard);
+		}
+	}
 
 	logger.info`INSERT query completed ${{ shardsQueried: shardsToQuery.length }} ${{ rowsAffected: result.rowsAffected }}`;
 

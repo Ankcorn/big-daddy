@@ -10,6 +10,7 @@
 import type {
 	AsyncJob,
 	ReshardingState,
+	ShardRowCount,
 	SqlParam,
 	StorageNode,
 	TableMetadata,
@@ -223,5 +224,102 @@ export class CRUDOperations {
 		}
 
 		return { success: true };
+	}
+
+	// ============================================================================
+	// Row Count Operations
+	// ============================================================================
+
+	/**
+	 * Get row counts for all shards of a table
+	 *
+	 * @param tableName - Name of the table
+	 * @returns Array of per-shard row counts
+	 */
+	getTableShardRowCounts(tableName: string): ShardRowCount[] {
+		return this.storage.sql
+			.exec(
+				`SELECT table_name, shard_id, row_count, updated_at 
+				 FROM table_shards 
+				 WHERE table_name = ? AND status = 'active'
+				 ORDER BY shard_id`,
+				tableName,
+			)
+			.toArray() as unknown as ShardRowCount[];
+	}
+
+	/**
+	 * Bump (increment or decrement) the row count for a specific shard
+	 * Clamps at 0 to prevent negative counts
+	 *
+	 * @param tableName - Name of the table
+	 * @param shardId - ID of the shard
+	 * @param delta - Amount to change (positive for inserts, negative for deletes)
+	 */
+	bumpTableShardRowCount(
+		tableName: string,
+		shardId: number,
+		delta: number,
+	): void {
+		const now = Date.now();
+		// Use MAX(0, ...) to clamp at 0
+		this.storage.sql.exec(
+			`UPDATE table_shards 
+			 SET row_count = MAX(0, row_count + ?), updated_at = ?
+			 WHERE table_name = ? AND shard_id = ?`,
+			delta,
+			now,
+			tableName,
+			shardId,
+		);
+	}
+
+	/**
+	 * Batch bump row counts for multiple shards of a table
+	 * More efficient than calling bumpTableShardRowCount multiple times
+	 *
+	 * @param tableName - Name of the table
+	 * @param deltaByShard - Map of shard_id to delta (amount to change)
+	 */
+	batchBumpTableShardRowCounts(
+		tableName: string,
+		deltaByShard: Map<number, number>,
+	): void {
+		const now = Date.now();
+		for (const [shardId, delta] of deltaByShard) {
+			this.storage.sql.exec(
+				`UPDATE table_shards 
+				 SET row_count = MAX(0, row_count + ?), updated_at = ?
+				 WHERE table_name = ? AND shard_id = ?`,
+				delta,
+				now,
+				tableName,
+				shardId,
+			);
+		}
+	}
+
+	/**
+	 * Set row counts for shards (used after resharding to set exact counts)
+	 *
+	 * @param tableName - Name of the table
+	 * @param countsByShardId - Map of shard_id to row_count
+	 */
+	setTableShardRowCounts(
+		tableName: string,
+		countsByShardId: Map<number, number>,
+	): void {
+		const now = Date.now();
+		for (const [shardId, rowCount] of countsByShardId) {
+			this.storage.sql.exec(
+				`UPDATE table_shards 
+				 SET row_count = ?, updated_at = ?
+				 WHERE table_name = ? AND shard_id = ?`,
+				rowCount,
+				now,
+				tableName,
+				shardId,
+			);
+		}
 	}
 }

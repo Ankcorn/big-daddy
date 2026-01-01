@@ -179,6 +179,44 @@ describe("Conductor", () => {
 		expect(remaining.rows[0]).toMatchObject({ id: 200, name: "Bob" });
 	});
 
+	it("should maintain per-shard row_count on INSERT and DELETE", async () => {
+		const dbId = "test-rowcount-maintenance";
+		const sql = await createConnection(dbId, { nodes: 3 }, env);
+
+		await sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)`;
+
+		await sql`INSERT INTO users (id, name) VALUES (${1}, ${"Alice"})`;
+		await sql`INSERT INTO users (id, name) VALUES (${2}, ${"Bob"})`;
+		await sql`INSERT INTO users (id, name) VALUES (${3}, ${"Charlie"})`;
+
+		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
+		const topology1 = await topologyStub.getTopology();
+		const userShards1 = topology1.table_shards.filter(
+			(s: TableShard) => s.table_name === "users",
+		);
+		const sum1 = userShards1.reduce(
+			(acc: number, s: TableShard) => acc + s.row_count,
+			0,
+		);
+		const countResult1 = await sql`SELECT COUNT(*) as cnt FROM users`;
+		const count1 = countResult1.rows[0]?.cnt;
+		expect(sum1).toBe(count1);
+
+		await sql`DELETE FROM users WHERE id = ${2}`;
+
+		const topology2 = await topologyStub.getTopology();
+		const userShards2 = topology2.table_shards.filter(
+			(s: TableShard) => s.table_name === "users",
+		);
+		const sum2 = userShards2.reduce(
+			(acc: number, s: TableShard) => acc + s.row_count,
+			0,
+		);
+		const countResult2 = await sql`SELECT COUNT(*) as cnt FROM users`;
+		const count2 = countResult2.rows[0]?.cnt;
+		expect(sum2).toBe(count2);
+	});
+
 	it("should route SELECT to correct shard when WHERE filters on shard key", async () => {
 		const dbId = "test-select-routing";
 		const sql = await createConnection(dbId, { nodes: 2 }, env);

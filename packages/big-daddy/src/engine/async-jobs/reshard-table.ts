@@ -257,6 +257,19 @@ export async function processReshardTableJob(
 		await topologyStub.atomicStatusSwitch(tableName);
 		logger.info`Phase 4: Atomic status switch completed ${{ source }} ${{ table: tableName }}`;
 
+		// Phase 4B: Set row counts for new shards using the verified distribution
+		const rowCountsByShardId = new Map<number, number>();
+		for (const targetShardId of targetShardIds) {
+			// Use the breakdown from verification if available, otherwise use copy distribution
+			const rowCount =
+				verifyStats.verificationDetails?.targets.breakdown[targetShardId] ??
+				copyStats.distribution[targetShardId] ??
+				0;
+			rowCountsByShardId.set(targetShardId, rowCount);
+		}
+		await topologyStub.setTableShardRowCounts(tableName, rowCountsByShardId);
+		logger.info`Phase 4B: Row counts set for new shards ${{ source }} ${{ table: tableName }} ${{ rowCounts: Object.fromEntries(rowCountsByShardId) }}`;
+
 		// Phase 5: Delete old shard data
 		await deleteOldShardData(env, job.database_id, sourceShardId, tableName);
 		const shardId = sourceShardId;

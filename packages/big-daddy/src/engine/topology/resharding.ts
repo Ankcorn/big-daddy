@@ -82,8 +82,8 @@ export class ReshardingOperations {
 			const nodeId = nodes[nodeIndex]!.node_id;
 
 			this.storage.sql.exec(
-				`INSERT INTO table_shards (table_name, shard_id, node_id, status, created_at, updated_at)
-				 VALUES (?, ?, ?, 'pending', ?, ?)`,
+				`INSERT INTO table_shards (table_name, shard_id, node_id, status, row_count, created_at, updated_at)
+				 VALUES (?, ?, ?, 'pending', 0, ?, ?)`,
 				tableName,
 				shardId,
 				nodeId,
@@ -96,6 +96,7 @@ export class ReshardingOperations {
 				shard_id: shardId,
 				node_id: nodeId,
 				status: "pending",
+				row_count: 0,
 				created_at: now,
 				updated_at: now,
 			});

@@ -28,6 +28,26 @@ Every table has a hidden `_virtualShard` column:
   - INSERT: Specific key invalidation
   - UPDATE/DELETE: Full index invalidation (conservative)
 
+## Per-Shard Row Count Tracking
+
+Row counts are tracked per-shard in `table_shards.row_count`:
+
+| Operation | Action |
+|-----------|--------|
+| INSERT | Increment by VALUES.length per shard |
+| DELETE | Decrement by rowsAffected per shard |
+| UPDATE | No change (row count unchanged) |
+| Resharding | Set exact counts after atomic switch |
+
+**Why VALUES.length for INSERT?**
+SQLite's `rowsWritten` counts B-tree operations (table + indexes), which inflates the count 2x for tables with composite primary keys. Using VALUES.length gives the logical row count.
+
+**Topology Methods:**
+- `getTableShardRowCounts(table)` → get all shard counts
+- `bumpTableShardRowCount(table, shard, delta)` → single shard
+- `batchBumpTableShardRowCounts(table, deltaMap)` → multiple shards
+- `setTableShardRowCounts(table, countsMap)` → set exact (resharding)
+
 ## Effect Usage
 Table operations (`create-drop.ts`) use Effect for:
 - Typed errors (`TableAlreadyExistsError`, `TopologyFetchError`, etc.)
