@@ -38,6 +38,7 @@ export const DashboardPage = ({
 			</h2>
 			<form method="post" action={`/dash/${databaseId}/sql`} class="space-y-3">
 				<textarea
+					id="sql-query"
 					name="query"
 					placeholder="Enter SQL query..."
 					class="w-full px-3 py-2 border-2 border-black text-sm font-mono focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-black"
@@ -48,12 +49,13 @@ export const DashboardPage = ({
 				<div class="flex gap-3">
 					<button
 						type="submit"
-						class="flex-1 bg-black text-white font-medium py-2 hover:bg-white hover:text-black hover:border-2 hover:border-black border-2 border-black transition"
+						class="flex-1 bg-black text-white font-medium py-2 border-2 border-black hover:bg-white hover:text-black transition"
 					>
 						Execute
 					</button>
 					<button
-						type="reset"
+						type="button"
+						onclick="document.getElementById('sql-query').value = ''"
 						class="flex-1 bg-white text-black font-medium py-2 border-2 border-black hover:bg-black hover:text-white transition"
 					>
 						Clear
