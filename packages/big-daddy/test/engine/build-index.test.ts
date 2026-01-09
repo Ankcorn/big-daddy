@@ -1,7 +1,14 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import type { IndexBuildJob, MessageBatch } from "../../src/engine/queue/types";
-import type { VirtualIndexEntry } from "../../src/engine/topology/types";
+import type {
+	IndexBuildJob,
+	MessageBatch,
+	ReshardTableJob,
+} from "../../src/engine/queue/types";
+import type {
+	TableShard,
+	VirtualIndexEntry,
+} from "../../src/engine/topology/types";
 import { createConductor } from "../../src/index";
 import { queueHandler } from "../../src/queue-consumer";
 
@@ -57,6 +64,25 @@ async function setupSmallDatabase(dbId: string) {
  */
 async function triggerBuildIndexJob(job: IndexBuildJob): Promise<void> {
 	const batch: MessageBatch<IndexBuildJob> = {
+		queue: "vitess-index-jobs",
+		messages: [
+			{
+				id: `test-${Date.now()}-${Math.random()}`,
+				timestamp: new Date(),
+				body: job,
+				attempts: 1,
+			},
+		],
+	};
+
+	await queueHandler(batch, env, job.correlation_id);
+}
+
+/**
+ * Helper: Manually trigger the reshard table queue job
+ */
+async function triggerReshardJob(job: ReshardTableJob): Promise<void> {
+	const batch: MessageBatch<ReshardTableJob> = {
 		queue: "vitess-index-jobs",
 		messages: [
 			{
@@ -454,5 +480,126 @@ describe("Build Index", () => {
 		);
 		expect(infoEntry).toBeDefined();
 		expect(JSON.parse(infoEntry!.shard_ids).length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("should build index correctly on resharded table", async () => {
+		const dbId = "test-build-index-after-reshard";
+		await initializeTopology(dbId, 3);
+
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
+
+		// 1. Create table and insert data
+		await conductor.sql`CREATE TABLE tasks (
+			id INTEGER PRIMARY KEY,
+			status TEXT NOT NULL,
+			title TEXT NOT NULL
+		)`;
+
+		for (let i = 1; i <= 10; i++) {
+			const status = i % 2 === 0 ? "completed" : "pending";
+			await conductor.sql`INSERT INTO tasks (id, status, title) VALUES (
+				${i},
+				${status},
+				${`Task ${i}`}
+			)`;
+		}
+
+		// Verify initial data is accessible
+		const initialData = await conductor.sql`SELECT * FROM tasks ORDER BY id`;
+		expect(initialData.rows).toHaveLength(10);
+
+		// 2. Reshard table from 1 to 3 shards
+		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
+		const changeLogId = `reshard-log-${Date.now()}`;
+
+		// Create pending shards
+		await topologyStub.createPendingShards("tasks", 3, changeLogId);
+		await topologyStub.startResharding("tasks");
+
+		// Get the topology to find source and target shards
+		let topology = await topologyStub.getTopology();
+		const taskShards = topology.table_shards.filter(
+			(s: TableShard) => s.table_name === "tasks",
+		);
+		const sourceShardId =
+			taskShards.find(
+				(s: TableShard) => s.status === "active" && s.shard_id === 0,
+			)?.shard_id || 0;
+		const targetShardIds = taskShards
+			.filter((s: TableShard) => s.status === "pending")
+			.map((s: TableShard) => s.shard_id);
+
+		// Process resharding job
+		const reshardJob: ReshardTableJob = {
+			type: "reshard_table",
+			database_id: dbId,
+			table_name: "tasks",
+			source_shard_id: sourceShardId,
+			target_shard_ids: targetShardIds,
+			shard_key: "id",
+			shard_strategy: "hash",
+			change_log_id: changeLogId,
+			created_at: new Date().toISOString(),
+			correlation_id: crypto.randomUUID(),
+		};
+
+		await triggerReshardJob(reshardJob);
+
+		// Verify resharding completed
+		const reshardingState = await topologyStub.getReshardingState("tasks");
+		expect(reshardingState?.status).toBe("complete");
+
+		// Verify data is still accessible after resharding
+		const afterReshard =
+			await conductor.sql`SELECT * FROM tasks WHERE id = ${1}`;
+		expect(afterReshard.rows).toHaveLength(1);
+		expect(afterReshard.rows[0]?.title).toBe("Task 1");
+
+		// 3. Build index on status column AFTER resharding
+		await topologyStub.createVirtualIndex(
+			"idx_status",
+			"tasks",
+			["status"],
+			"hash",
+		);
+
+		const buildJob: IndexBuildJob = {
+			type: "build_index",
+			database_id: dbId,
+			table_name: "tasks",
+			columns: ["status"],
+			index_name: "idx_status",
+			created_at: new Date().toISOString(),
+		};
+
+		await triggerBuildIndexJob(buildJob);
+
+		// 4. Verify index entries have valid shard_ids (NOT [null])
+		topology = await topologyStub.getTopology();
+		expect(topology.virtual_indexes[0]?.status).toBe("ready");
+		expect(topology.virtual_index_entries.length).toBe(2); // "pending" and "completed"
+
+		for (const entry of topology.virtual_index_entries) {
+			const shardIds = JSON.parse(entry.shard_ids);
+			expect(shardIds.length).toBeGreaterThan(0);
+
+			// CRITICAL: Verify no null values in shard_ids - this is the bug we're fixing
+			for (const shardId of shardIds) {
+				expect(shardId).not.toBeNull();
+				expect(typeof shardId).toBe("number");
+			}
+		}
+
+		// 5. Query using index and verify results returned
+		// Create a fresh conductor to ensure no stale cache
+		const freshConductor = createConductor(dbId, crypto.randomUUID(), env);
+
+		const pendingTasks =
+			await freshConductor.sql`SELECT * FROM tasks WHERE status = ${"pending"}`;
+		expect(pendingTasks.rows.length).toBe(5); // 5 odd-numbered tasks are "pending"
+
+		const completedTasks =
+			await freshConductor.sql`SELECT * FROM tasks WHERE status = ${"completed"}`;
+		expect(completedTasks.rows.length).toBe(5); // 5 even-numbered tasks are "completed"
 	});
 });

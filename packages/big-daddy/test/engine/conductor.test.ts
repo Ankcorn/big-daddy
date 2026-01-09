@@ -862,4 +862,28 @@ describe("Conductor", () => {
 		const countValue = countResult.rows[0]?.yo;
 		expect(countValue).toBe(3);
 	});
+
+	it("should return _virtualShard when explicitly selected in query", async () => {
+		const dbId = "test-select-virtual-shard";
+		const sql = await createConnection(dbId, { nodes: 3 }, env);
+
+		// Create table and insert data
+		await sql`CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)`;
+
+		for (let i = 1; i <= 5; i++) {
+			await sql`INSERT INTO items (id, name) VALUES (${i}, ${`Item ${i}`})`;
+		}
+
+		// Query with explicit _virtualShard selection
+		const result =
+			await sql`SELECT id, name, _virtualShard FROM items ORDER BY id`;
+
+		// Verify _virtualShard is present and contains valid shard IDs (not null)
+		expect(result.rows).toHaveLength(5);
+		for (const row of result.rows) {
+			expect(row).toHaveProperty("_virtualShard");
+			expect(row._virtualShard).not.toBeNull();
+			expect(typeof row._virtualShard).toBe("number");
+		}
+	});
 });

@@ -449,6 +449,23 @@ function mergeAggregations(
 }
 
 /**
+ * Check if _virtualShard was explicitly selected in the query
+ */
+function isVirtualShardExplicitlySelected(statement: SelectStatement): boolean {
+	if (!statement.select || !Array.isArray(statement.select)) {
+		return false;
+	}
+
+	return statement.select.some((col) => {
+		// Check if it's a direct identifier selection
+		if (col.expression?.type === "Identifier") {
+			return col.expression.name === "_virtualShard";
+		}
+		return false;
+	});
+}
+
+/**
  * Merge results from multiple shards
  * Handles SELECT (with aggregations), INSERT, UPDATE, and DELETE statements
  */
@@ -473,8 +490,15 @@ export function mergeResultsSimple(
 		// Regular SELECT - merge all rows from shards
 		const mergedRows = results.flatMap((r) => r.rows);
 
-		// Strip _virtualShard from result rows (hidden column should not be visible to user)
+		// Check if _virtualShard was explicitly selected in the query
+		const keepVirtualShard = isVirtualShardExplicitlySelected(statement);
+
+		// Strip _virtualShard from result rows ONLY if not explicitly selected
+		// (hidden column should not be visible to user unless they request it)
 		const cleanedRows = mergedRows.map((row) => {
+			if (keepVirtualShard) {
+				return row;
+			}
 			const { _virtualShard: _, ...cleaned } = row as Record<string, unknown>;
 			return cleaned;
 		});

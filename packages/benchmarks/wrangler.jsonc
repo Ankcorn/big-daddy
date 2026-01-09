@@ -1,37 +1,17 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "big-daddy-benchmarks",
+	"account_id": "92a369ba0c773e307fbf9b8814730c09",
 	"main": "src/index.ts",
 	"compatibility_date": "2025-10-26",
 	"compatibility_flags": ["nodejs_compat"],
 	"services": [
 		{
 			"binding": "BIG_DADDY",
-			"service": "big-daddy"
+			"service": "big-daddy",
+			"remote": true
 		}
 	],
-	"durable_objects": {
-		"bindings": [
-			{
-				"name": "STORAGE",
-				"class_name": "Storage",
-				"script_name": "big-daddy"
-			},
-			{
-				"name": "TOPOLOGY",
-				"class_name": "Topology",
-				"script_name": "big-daddy"
-			}
-		]
-	},
-	"queues": {
-		"producers": [
-			{
-				"queue": "vitess-index-jobs",
-				"binding": "INDEX_QUEUE"
-			}
-		]
-	},
 	"workflows": [
 		{
 			"name": "blog-seed-workflow",
