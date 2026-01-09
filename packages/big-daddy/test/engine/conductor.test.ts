@@ -896,6 +896,227 @@ describe("Conductor", () => {
 		expect(countValue).toBe(3);
 	});
 
+	it("should handle COUNT with GROUP BY across shards", async () => {
+		const dbId = "test-count-group-by";
+		const sql = await createConnection(dbId, { nodes: 3 }, env);
+
+		// Create table with 3 shards to ensure data is distributed
+		const createTableSql =
+			"CREATE TABLE orders /* SHARDS=3 */ (id INTEGER PRIMARY KEY, status TEXT NOT NULL, amount INTEGER)";
+		await sql([createTableSql] as unknown as TemplateStringsArray);
+
+		// Insert orders with different statuses distributed across shards
+		// Using different id values to ensure distribution
+		await sql`INSERT INTO orders (id, status, amount) VALUES (${1}, ${"pending"}, ${100})`;
+		await sql`INSERT INTO orders (id, status, amount) VALUES (${2}, ${"completed"}, ${200})`;
+		await sql`INSERT INTO orders (id, status, amount) VALUES (${3}, ${"pending"}, ${150})`;
+		await sql`INSERT INTO orders (id, status, amount) VALUES (${4}, ${"completed"}, ${300})`;
+		await sql`INSERT INTO orders (id, status, amount) VALUES (${5}, ${"pending"}, ${250})`;
+		await sql`INSERT INTO orders (id, status, amount) VALUES (${6}, ${"cancelled"}, ${50})`;
+		await sql`INSERT INTO orders (id, status, amount) VALUES (${7}, ${"completed"}, ${400})`;
+		await sql`INSERT INTO orders (id, status, amount) VALUES (${8}, ${"pending"}, ${175})`;
+
+		// Test COUNT with GROUP BY status
+		const result =
+			await sql`SELECT status, COUNT(*) as count FROM orders GROUP BY status`;
+
+		// Should return 3 rows (one per status: pending, completed, cancelled)
+		expect(result.rows).toHaveLength(3);
+
+		// Sort by status for predictable assertions
+		const sorted = [...result.rows].sort((a, b) =>
+			String(a.status).localeCompare(String(b.status)),
+		);
+
+		expect(sorted[0]).toMatchObject({ status: "cancelled", count: 1 });
+		expect(sorted[1]).toMatchObject({ status: "completed", count: 3 });
+		expect(sorted[2]).toMatchObject({ status: "pending", count: 4 });
+	});
+
+	it("should handle multiple aggregations with GROUP BY", async () => {
+		const dbId = "test-multi-agg-group-by";
+		const sql = await createConnection(dbId, { nodes: 3 }, env);
+
+		// Create table with 3 shards
+		const createTableSql =
+			"CREATE TABLE sales /* SHARDS=3 */ (id INTEGER PRIMARY KEY, region TEXT NOT NULL, amount INTEGER)";
+		await sql([createTableSql] as unknown as TemplateStringsArray);
+
+		// Insert sales data
+		await sql`INSERT INTO sales (id, region, amount) VALUES (${1}, ${"North"}, ${100})`;
+		await sql`INSERT INTO sales (id, region, amount) VALUES (${2}, ${"South"}, ${200})`;
+		await sql`INSERT INTO sales (id, region, amount) VALUES (${3}, ${"North"}, ${150})`;
+		await sql`INSERT INTO sales (id, region, amount) VALUES (${4}, ${"South"}, ${300})`;
+		await sql`INSERT INTO sales (id, region, amount) VALUES (${5}, ${"North"}, ${250})`;
+		await sql`INSERT INTO sales (id, region, amount) VALUES (${6}, ${"East"}, ${175})`;
+
+		// Test multiple aggregations with GROUP BY
+		const result =
+			await sql`SELECT region, COUNT(*) as count, SUM(amount) as total FROM sales GROUP BY region`;
+
+		// Should return 3 rows (one per region)
+		expect(result.rows).toHaveLength(3);
+
+		// Sort by region for predictable assertions
+		const sorted = [...result.rows].sort((a, b) =>
+			String(a.region).localeCompare(String(b.region)),
+		);
+
+		expect(sorted[0]).toMatchObject({ region: "East", count: 1, total: 175 });
+		expect(sorted[1]).toMatchObject({ region: "North", count: 3, total: 500 });
+		expect(sorted[2]).toMatchObject({ region: "South", count: 2, total: 500 });
+	});
+
+	it("should handle GROUP BY with same group key on multiple shards", async () => {
+		const dbId = "test-group-by-merge-shards";
+		const sql = await createConnection(dbId, { nodes: 3 }, env);
+
+		// Create table with 3 shards - this ensures events are distributed
+		const createTableSql =
+			"CREATE TABLE events /* SHARDS=3 */ (id INTEGER PRIMARY KEY, type TEXT NOT NULL)";
+		await sql([createTableSql] as unknown as TemplateStringsArray);
+
+		// Insert events - same types will likely end up on different shards due to id-based sharding
+		await sql`INSERT INTO events (id, type) VALUES (${1}, ${"click"})`;
+		await sql`INSERT INTO events (id, type) VALUES (${2}, ${"view"})`;
+		await sql`INSERT INTO events (id, type) VALUES (${3}, ${"click"})`;
+		await sql`INSERT INTO events (id, type) VALUES (${4}, ${"view"})`;
+		await sql`INSERT INTO events (id, type) VALUES (${5}, ${"click"})`;
+		await sql`INSERT INTO events (id, type) VALUES (${6}, ${"view"})`;
+		await sql`INSERT INTO events (id, type) VALUES (${7}, ${"click"})`;
+		await sql`INSERT INTO events (id, type) VALUES (${8}, ${"purchase"})`;
+
+		// Test GROUP BY type - same type values exist across multiple shards
+		const result =
+			await sql`SELECT type, COUNT(*) as count FROM events GROUP BY type`;
+
+		// Should return 3 rows (click, view, purchase) with MERGED counts
+		expect(result.rows).toHaveLength(3);
+
+		const sorted = [...result.rows].sort((a, b) =>
+			String(a.type).localeCompare(String(b.type)),
+		);
+
+		// Counts should be merged across shards
+		expect(sorted[0]).toMatchObject({ type: "click", count: 4 });
+		expect(sorted[1]).toMatchObject({ type: "purchase", count: 1 });
+		expect(sorted[2]).toMatchObject({ type: "view", count: 3 });
+	});
+
+	it("should handle GROUP BY _virtualShard", async () => {
+		const dbId = "test-group-by-virtual-shard";
+		const sql = await createConnection(dbId, { nodes: 3 }, env);
+
+		// Create table with 3 shards
+		const createTableSql =
+			"CREATE TABLE items /* SHARDS=3 */ (id INTEGER PRIMARY KEY, name TEXT)";
+		await sql([createTableSql] as unknown as TemplateStringsArray);
+
+		// Insert items that will be distributed across shards
+		for (let i = 1; i <= 10; i++) {
+			await sql`INSERT INTO items (id, name) VALUES (${i}, ${`Item ${i}`})`;
+		}
+
+		// Test GROUP BY _virtualShard - each shard should return one row
+		const result =
+			await sql`SELECT _virtualShard, COUNT(*) as count FROM items GROUP BY _virtualShard`;
+
+		// Should return multiple rows (one per shard that has data)
+		expect(result.rows.length).toBeGreaterThan(0);
+
+		// Total count across all shards should equal 10
+		const totalCount = result.rows.reduce(
+			(sum, row) => sum + Number(row.count),
+			0,
+		);
+		expect(totalCount).toBe(10);
+
+		// Each row should have a valid _virtualShard value
+		for (const row of result.rows) {
+			expect(row._virtualShard).not.toBeNull();
+			expect(typeof row._virtualShard).toBe("number");
+			expect(Number(row.count)).toBeGreaterThan(0);
+		}
+	});
+
+	it("should handle GROUP BY column not in SELECT", async () => {
+		const dbId = "test-group-by-not-in-select";
+		const sql = await createConnection(dbId, { nodes: 3 }, env);
+
+		// Create table with 3 shards
+		const createTableSql =
+			"CREATE TABLE tasks /* SHARDS=3 */ (id INTEGER PRIMARY KEY, task TEXT NOT NULL, priority INTEGER)";
+		await sql([createTableSql] as unknown as TemplateStringsArray);
+
+		// Insert tasks with different task values
+		await sql`INSERT INTO tasks (id, task, priority) VALUES (${1}, ${"Buy milk"}, ${1})`;
+		await sql`INSERT INTO tasks (id, task, priority) VALUES (${2}, ${"Walk dog"}, ${2})`;
+		await sql`INSERT INTO tasks (id, task, priority) VALUES (${3}, ${"Buy milk"}, ${1})`;
+		await sql`INSERT INTO tasks (id, task, priority) VALUES (${4}, ${"Read book"}, ${3})`;
+		await sql`INSERT INTO tasks (id, task, priority) VALUES (${5}, ${"Walk dog"}, ${2})`;
+		await sql`INSERT INTO tasks (id, task, priority) VALUES (${6}, ${"Buy milk"}, ${1})`;
+
+		// GROUP BY task without task in SELECT
+		// IMPORTANT: Without the GROUP BY column in SELECT, we cannot merge groups across shards
+		// because we don't know which rows belong to which group.
+		// Each shard returns its own grouped rows, resulting in more rows than unique groups.
+		const result = await sql`SELECT COUNT(*) as count FROM tasks GROUP BY task`;
+
+		// The counts should sum to 6 (total number of tasks)
+		// This verifies that no data was lost, even if we can't merge groups properly
+		const totalCount = result.rows.reduce(
+			(sum, row) => sum + Number(row.count),
+			0,
+		);
+		expect(totalCount).toBe(6);
+
+		// Each row should have a valid count > 0
+		for (const row of result.rows) {
+			expect(Number(row.count)).toBeGreaterThan(0);
+		}
+	});
+
+	it("should properly merge GROUP BY when column IS in SELECT", async () => {
+		const dbId = "test-group-by-in-select";
+		const sql = await createConnection(dbId, { nodes: 3 }, env);
+
+		// Create table with 3 shards
+		const createTableSql =
+			"CREATE TABLE tasks2 /* SHARDS=3 */ (id INTEGER PRIMARY KEY, task TEXT NOT NULL, priority INTEGER)";
+		await sql([createTableSql] as unknown as TemplateStringsArray);
+
+		// Insert tasks with different task values
+		await sql`INSERT INTO tasks2 (id, task, priority) VALUES (${1}, ${"Buy milk"}, ${1})`;
+		await sql`INSERT INTO tasks2 (id, task, priority) VALUES (${2}, ${"Walk dog"}, ${2})`;
+		await sql`INSERT INTO tasks2 (id, task, priority) VALUES (${3}, ${"Buy milk"}, ${1})`;
+		await sql`INSERT INTO tasks2 (id, task, priority) VALUES (${4}, ${"Read book"}, ${3})`;
+		await sql`INSERT INTO tasks2 (id, task, priority) VALUES (${5}, ${"Walk dog"}, ${2})`;
+		await sql`INSERT INTO tasks2 (id, task, priority) VALUES (${6}, ${"Buy milk"}, ${1})`;
+
+		// GROUP BY task WITH task in SELECT - this enables proper cross-shard merging
+		const result =
+			await sql`SELECT task, COUNT(*) as count FROM tasks2 GROUP BY task`;
+
+		// Should return exactly 3 rows (Buy milk: 3, Walk dog: 2, Read book: 1)
+		expect(result.rows).toHaveLength(3);
+
+		// The counts should sum to 6 (total number of tasks)
+		const totalCount = result.rows.reduce(
+			(sum, row) => sum + Number(row.count),
+			0,
+		);
+		expect(totalCount).toBe(6);
+
+		// Sort by task name for predictable assertions
+		const sorted = [...result.rows].sort((a, b) =>
+			String(a.task).localeCompare(String(b.task)),
+		);
+
+		expect(sorted[0]).toMatchObject({ task: "Buy milk", count: 3 });
+		expect(sorted[1]).toMatchObject({ task: "Read book", count: 1 });
+		expect(sorted[2]).toMatchObject({ task: "Walk dog", count: 2 });
+	});
+
 	it("should return _virtualShard when explicitly selected in query", async () => {
 		const dbId = "test-select-virtual-shard";
 		const sql = await createConnection(dbId, { nodes: 3 }, env);

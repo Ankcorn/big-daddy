@@ -350,7 +350,170 @@ function hasAggregations(statement: SelectStatement): boolean {
 }
 
 /**
+ * Extract GROUP BY column names from the statement
+ */
+function extractGroupByColumns(statement: SelectStatement): string[] {
+	if (!statement.groupBy || statement.groupBy.length === 0) {
+		return [];
+	}
+
+	return statement.groupBy
+		.map((expr) => {
+			if (expr.type === "Identifier") {
+				return expr.name;
+			}
+			return null;
+		})
+		.filter((name): name is string => name !== null);
+}
+
+/**
+ * Find the actual column name in the row that matches the expected column name
+ * Handles case differences and SQLite's function naming conventions
+ */
+function findActualColumnName(
+	expectedName: string,
+	actualColumnNames: string[],
+	expr?: Expression,
+): string {
+	if (actualColumnNames.includes(expectedName)) {
+		return expectedName;
+	}
+
+	// Try lowercase version
+	const lowerName = expectedName.toLowerCase();
+	if (actualColumnNames.includes(lowerName)) {
+		return lowerName;
+	}
+
+	// Try to find a column that starts with the function name (case-insensitive)
+	if (expr?.type === "FunctionCall") {
+		const funcName = (expr.name || "").toLowerCase();
+		const matchingCol = actualColumnNames.find((c) =>
+			c.toLowerCase().startsWith(funcName),
+		);
+		if (matchingCol) {
+			return matchingCol;
+		}
+	}
+
+	return expectedName;
+}
+
+/**
+ * Merge aggregation values for a single column within a group of rows
+ */
+function mergeAggregationColumn(
+	rows: Record<string, unknown>[],
+	actualColName: string,
+	funcName: string,
+): unknown {
+	switch (funcName) {
+		case "COUNT": {
+			// SUM all count values
+			return rows.reduce((sum, row) => {
+				const val = Number(row[actualColName]) || 0;
+				return sum + val;
+			}, 0);
+		}
+		case "SUM": {
+			// SUM all sum values
+			return rows.reduce(
+				(sum, row) => sum + (Number(row[actualColName]) || 0),
+				0,
+			);
+		}
+		case "MIN": {
+			// Take minimum of all values
+			const values = rows
+				.map((row) => row[actualColName])
+				.filter((v): v is number => v != null && typeof v === "number");
+			return values.length > 0 ? Math.min(...values) : null;
+		}
+		case "MAX": {
+			// Take maximum of all values
+			const values = rows
+				.map((row) => row[actualColName])
+				.filter((v): v is number => v != null && typeof v === "number");
+			return values.length > 0 ? Math.max(...values) : null;
+		}
+		case "AVG": {
+			// For AVG, we need to recalculate
+			// Ideally we'd have SUM and COUNT separately, but as a fallback average the averages
+			const values = rows
+				.map((row) => row[actualColName])
+				.filter((v): v is number => v != null && typeof v === "number");
+			if (values.length > 0) {
+				return values.reduce((a, b) => a + b, 0) / values.length;
+			}
+			return null;
+		}
+		default:
+			return rows[0]?.[actualColName];
+	}
+}
+
+/**
+ * Merge a group of rows into a single row by applying aggregation functions
+ */
+function mergeRowGroup(
+	rows: Record<string, unknown>[],
+	statement: SelectStatement,
+	groupByColumns: string[],
+	actualColumnNames: string[],
+): Record<string, unknown> {
+	const selectCols = statement.select || [];
+	const mergedRow: Record<string, unknown> = {};
+
+	for (const col of selectCols) {
+		const colName = getColumnName(col);
+		const expr = col.expression;
+		const actualColName = findActualColumnName(
+			colName,
+			actualColumnNames,
+			expr,
+		);
+
+		if (expr?.type === "FunctionCall") {
+			const funcName = (expr.name || "").toUpperCase();
+			mergedRow[colName] = mergeAggregationColumn(
+				rows,
+				actualColName,
+				funcName,
+			);
+		} else {
+			// Non-aggregated column (GROUP BY column) - use first value
+			// All rows in the group should have the same value for GROUP BY columns
+			mergedRow[colName] = rows[0]?.[actualColName];
+		}
+	}
+
+	return mergedRow;
+}
+
+/**
+ * Check if all GROUP BY columns are present in the result rows
+ */
+function areGroupByColumnsInResults(
+	groupByColumns: string[],
+	actualColumnNames: string[],
+): boolean {
+	for (const col of groupByColumns) {
+		const actualCol = findActualColumnName(col, actualColumnNames);
+		if (!actualColumnNames.includes(actualCol)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+/**
  * Merge aggregation results from multiple shards
+ *
+ * Handles three cases:
+ * 1. No GROUP BY: Merge all rows into a single aggregated row
+ * 2. With GROUP BY (columns in SELECT): Group rows by GROUP BY column values, then merge within each group
+ * 3. With GROUP BY (columns NOT in SELECT): Cannot merge properly, return all rows as-is
  */
 function mergeAggregations(
 	results: QueryResult[],
@@ -366,86 +529,54 @@ function mergeAggregations(
 	// Get the actual column names from the first row
 	const actualColumnNames = allRows[0] ? Object.keys(allRows[0]) : [];
 
-	// Get select columns to identify aggregation types
-	const selectCols = statement.select || [];
+	// Extract GROUP BY column names
+	const groupByColumns = extractGroupByColumns(statement);
 
-	// Build merged row with aggregation logic
-	const mergedRow: Record<string, unknown> = {};
-
-	for (let i = 0; i < selectCols.length; i++) {
-		const col = selectCols[i]!;
-		const colName = getColumnName(col);
-		const expr = col.expression;
-
-		// Try to find the actual column name in the returned rows
-		// This handles cases where SQLite returns a different name than we reconstruct
-		let actualColName = colName;
-		if (!actualColumnNames.includes(colName)) {
-			// Try lowercase version
-			const lowerColName = colName.toLowerCase();
-			if (actualColumnNames.includes(lowerColName)) {
-				actualColName = lowerColName;
-			} else {
-				// Try to find a column that starts with the function name (case-insensitive)
-				const funcName =
-					expr?.type === "FunctionCall" ? (expr.name || "").toLowerCase() : "";
-				const matchingCol = actualColumnNames.find((c) =>
-					c.toLowerCase().startsWith(funcName),
-				);
-				if (matchingCol) {
-					actualColName = matchingCol;
-				}
-			}
-		}
-
-		if (expr?.type === "FunctionCall") {
-			const funcName = (expr.name || "").toUpperCase();
-
-			if (funcName === "COUNT") {
-				// SUM all count values
-				const countValue = allRows.reduce((sum, row) => {
-					const val = Number(row[actualColName]) || 0;
-					return sum + val;
-				}, 0);
-				mergedRow[colName] = countValue;
-			} else if (funcName === "SUM") {
-				// SUM all sum values
-				mergedRow[colName] = allRows.reduce(
-					(sum, row) => sum + (Number(row[actualColName]) || 0),
-					0,
-				);
-			} else if (funcName === "MIN") {
-				// Take minimum of all values
-				const values = allRows
-					.map((row) => row[actualColName])
-					.filter((v): v is number => v != null && typeof v === "number");
-				mergedRow[colName] = values.length > 0 ? Math.min(...values) : null;
-			} else if (funcName === "MAX") {
-				// Take maximum of all values
-				const values = allRows
-					.map((row) => row[actualColName])
-					.filter((v): v is number => v != null && typeof v === "number");
-				mergedRow[colName] = values.length > 0 ? Math.max(...values) : null;
-			} else if (funcName === "AVG") {
-				// For AVG, we need to recalculate
-				// Ideally we'd have SUM and COUNT separately, but as a fallback average the averages
-				const values = allRows
-					.map((row) => row[actualColName])
-					.filter((v): v is number => v != null && typeof v === "number");
-				if (values.length > 0) {
-					mergedRow[colName] =
-						values.reduce((a, b) => a + b, 0) / values.length;
-				} else {
-					mergedRow[colName] = null;
-				}
-			}
-		} else {
-			// Non-aggregated column - use first value (for GROUP BY scenarios)
-			mergedRow[colName] = allRows[0]?.[actualColName];
-		}
+	// If no GROUP BY, merge all rows into a single row (original behavior)
+	if (groupByColumns.length === 0) {
+		return [
+			mergeRowGroup(allRows, statement, groupByColumns, actualColumnNames),
+		];
 	}
 
-	return [mergedRow];
+	// Check if GROUP BY columns are present in the result rows
+	// If not, we can't properly merge by group, so return all rows as-is
+	if (!areGroupByColumnsInResults(groupByColumns, actualColumnNames)) {
+		// GROUP BY columns not in SELECT - return all rows without merging
+		// Each shard has already done the grouping, we just can't merge across shards
+		return allRows;
+	}
+
+	// With GROUP BY: Group rows by their GROUP BY column values
+	const groups = new Map<string, Record<string, unknown>[]>();
+
+	for (const row of allRows) {
+		// Build a composite key from GROUP BY column values
+		const keyParts = groupByColumns.map((col) => {
+			const actualCol = findActualColumnName(col, actualColumnNames);
+			return JSON.stringify(row[actualCol]);
+		});
+		const groupKey = keyParts.join("|");
+
+		if (!groups.has(groupKey)) {
+			groups.set(groupKey, []);
+		}
+		groups.get(groupKey)!.push(row);
+	}
+
+	// Merge each group separately
+	const mergedResults: Record<string, unknown>[] = [];
+	for (const groupRows of groups.values()) {
+		const mergedRow = mergeRowGroup(
+			groupRows,
+			statement,
+			groupByColumns,
+			actualColumnNames,
+		);
+		mergedResults.push(mergedRow);
+	}
+
+	return mergedResults;
 }
 
 /**
