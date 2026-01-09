@@ -5,7 +5,7 @@ import type { Topology } from "../topology/index";
 import { buildQuery } from "../utils/ast-utils";
 import { TopologyCache } from "../utils/topology-cache";
 import { handleDelete, handleInsert, handleSelect, handleUpdate } from "./crud";
-import { handleCreateIndex } from "./indexes";
+import { handleCreateIndex, handleDropIndex } from "./indexes";
 import { handlePragma } from "./pragmas";
 import { handleCreateTable, handleDropTable } from "./tables";
 import type {
@@ -128,6 +128,13 @@ export class ConductorClient {
 			result = (await handleDropTable(statement, context)) as QueryResult<T>;
 		} else if (statement.type === "CreateIndexStatement") {
 			result = (await handleCreateIndex(statement, context)) as QueryResult<T>;
+		} else if (statement.type === "DropIndexStatement") {
+			result = (await handleDropIndex(
+				statement.name.name,
+				undefined, // tableName not specified in DROP INDEX syntax
+				context,
+				statement.ifExists ?? false,
+			)) as QueryResult<T>;
 		} else if (statement.type === "PragmaStatement") {
 			result = (await handlePragma(
 				statement,

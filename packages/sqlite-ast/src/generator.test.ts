@@ -172,5 +172,19 @@ describe("generator", () => {
 			const generated = generate(ast);
 			expect(generated).toBe(sql);
 		});
+
+		it("should generate DROP INDEX", () => {
+			const sql = "DROP INDEX idx_email";
+			const ast = parse(sql);
+			const generated = generate(ast);
+			expect(generated).toBe(sql);
+		});
+
+		it("should generate DROP INDEX IF EXISTS", () => {
+			const sql = "DROP INDEX IF EXISTS idx_email";
+			const ast = parse(sql);
+			const generated = generate(ast);
+			expect(generated).toBe(sql);
+		});
 	});
 });

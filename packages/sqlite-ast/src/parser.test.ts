@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "./parser";
 import type {
 	DeleteStatement,
+	DropIndexStatement,
 	DropTableStatement,
 	InsertStatement,
 	PragmaStatement,
@@ -1104,6 +1105,34 @@ describe("parser", () => {
 			expect(dropStmt.table).toEqual({
 				type: "Identifier",
 				name: "users",
+			});
+			expect(dropStmt.ifExists).toBe(true);
+		});
+	});
+
+	describe("DROP INDEX statements", () => {
+		it("should parse DROP INDEX", () => {
+			const sql = "DROP INDEX idx_email";
+			const ast = parse(sql);
+
+			expect(ast.type).toBe("DropIndexStatement");
+			const dropStmt = ast as DropIndexStatement;
+			expect(dropStmt.name).toEqual({
+				type: "Identifier",
+				name: "idx_email",
+			});
+			expect(dropStmt.ifExists).toBeUndefined();
+		});
+
+		it("should parse DROP INDEX IF EXISTS", () => {
+			const sql = "DROP INDEX IF EXISTS idx_email";
+			const ast = parse(sql);
+
+			expect(ast.type).toBe("DropIndexStatement");
+			const dropStmt = ast as DropIndexStatement;
+			expect(dropStmt.name).toEqual({
+				type: "Identifier",
+				name: "idx_email",
 			});
 			expect(dropStmt.ifExists).toBe(true);
 		});

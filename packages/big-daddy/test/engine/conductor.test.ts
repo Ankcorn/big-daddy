@@ -428,6 +428,39 @@ describe("Conductor", () => {
 		);
 	});
 
+	it("should drop an index", async () => {
+		const dbId = "test-drop-index-1";
+		const sql = await createConnection(dbId, { nodes: 3 }, env);
+
+		await sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)`;
+		await sql`CREATE INDEX idx_email ON users(email)`;
+
+		// Verify index exists
+		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
+		let topology = await topologyStub.getTopology();
+		expect(topology.virtual_indexes).toHaveLength(1);
+
+		// Drop the index
+		await sql`DROP INDEX idx_email`;
+
+		// Verify index is gone
+		topology = await topologyStub.getTopology();
+		expect(topology.virtual_indexes).toHaveLength(0);
+	});
+
+	it("should handle DROP INDEX IF EXISTS for non-existent index", async () => {
+		const dbId = "test-drop-index-2";
+		const sql = await createConnection(dbId, { nodes: 3 }, env);
+
+		await sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)`;
+
+		// Should not throw for non-existent index with IF EXISTS
+		await sql`DROP INDEX IF EXISTS idx_nonexistent`;
+
+		// Without IF EXISTS should throw
+		await expect(sql`DROP INDEX idx_nonexistent`).rejects.toThrow("not found");
+	});
+
 	it("should create composite (multi-column) indexes", async () => {
 		const dbId = "test-create-index-6";
 		const sql = await createConnection(dbId, { nodes: 3 }, env);

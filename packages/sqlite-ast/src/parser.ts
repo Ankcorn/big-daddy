@@ -9,6 +9,7 @@ import type {
 	CreateIndexStatement,
 	CreateTableStatement,
 	DeleteStatement,
+	DropIndexStatement,
 	DropTableStatement,
 	Expression,
 	FunctionCall,
@@ -624,7 +625,11 @@ class Parser {
 			return this.parseDropTable();
 		}
 
-		throw new ParserError("Only DROP TABLE is supported");
+		if (this.match("INDEX")) {
+			return this.parseDropIndex();
+		}
+
+		throw new ParserError("Only DROP TABLE and DROP INDEX are supported");
 	}
 
 	private parseDropTable(): DropTableStatement {
@@ -643,6 +648,26 @@ class Parser {
 		return {
 			type: "DropTableStatement",
 			table,
+			...(ifExists ? { ifExists } : {}),
+		};
+	}
+
+	private parseDropIndex(): DropIndexStatement {
+		this.expect("INDEX", "keyword");
+
+		// Check for IF EXISTS clause
+		let ifExists: boolean | undefined;
+		if (this.match("IF")) {
+			this.advance();
+			this.expect("EXISTS", "keyword");
+			ifExists = true;
+		}
+
+		const name = this.parseIdentifier();
+
+		return {
+			type: "DropIndexStatement",
+			name,
 			...(ifExists ? { ifExists } : {}),
 		};
 	}

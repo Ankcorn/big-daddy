@@ -198,6 +198,12 @@ export interface DropTableStatement extends BaseNode {
 	ifExists?: boolean;
 }
 
+export interface DropIndexStatement extends BaseNode {
+	type: "DropIndexStatement";
+	name: Identifier;
+	ifExists?: boolean;
+}
+
 export type Statement =
 	| SelectStatement
 	| InsertStatement
@@ -207,7 +213,8 @@ export type Statement =
 	| AlterTableStatement
 	| CreateIndexStatement
 	| PragmaStatement
-	| DropTableStatement;
+	| DropTableStatement
+	| DropIndexStatement;
 
 export interface Program extends BaseNode {
 	type: "Program";

@@ -8,6 +8,7 @@ import type {
 	CreateIndexStatement,
 	CreateTableStatement,
 	DeleteStatement,
+	DropIndexStatement,
 	DropTableStatement,
 	Expression,
 	FunctionCall,
@@ -50,6 +51,8 @@ export function generate(ast: Statement): string {
 			return generatePragma(ast);
 		case "DropTableStatement":
 			return generateDropTable(ast);
+		case "DropIndexStatement":
+			return generateDropIndex(ast);
 		default:
 			throw new Error(
 				`Unknown statement type: ${(ast as { type: string }).type}`,
@@ -298,6 +301,18 @@ function generateDropTable(stmt: DropTableStatement): string {
 	}
 
 	sql += ` ${generateIdentifier(stmt.table)}`;
+
+	return sql;
+}
+
+function generateDropIndex(stmt: DropIndexStatement): string {
+	let sql = "DROP INDEX";
+
+	if (stmt.ifExists) {
+		sql += " IF EXISTS";
+	}
+
+	sql += ` ${generateIdentifier(stmt.name)}`;
 
 	return sql;
 }
